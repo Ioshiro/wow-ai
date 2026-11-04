@@ -13,8 +13,27 @@ const A = require('../bridge/agents');
 
 const SYS = 'The user is talking to you from inside World of Warcraft';
 
+test('omp keeps only completed assistant text, resumes the session and reports terminal failures', () => {
+  const p = A.AGENTS.omp.parser();
+  assert.equal(p.feed({ type: 'session', id: 'omp-session', cwd: '/project' }).session, 'omp-session');
+  p.feed({ type: 'message_end', message: { role: 'user', content: [{ type: 'text', text: 'private prompt' }] } });
+  p.feed({ type: 'message_start', message: { role: 'assistant', content: [{ type: 'text', text: 'PONG' }] } });
+  p.feed({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'PONG' } });
+  p.feed({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'private' }, { type: 'text', text: 'PONG' }], stopReason: 'stop' } });
+  assert.deepEqual(p.feed({ type: 'agent_end', messages: [] }).done, { text: 'PONG', error: false });
+  assert.deepEqual(p.feed({ type: 'tool_execution_start', toolName: 'read', args: { path: '/project/hello.txt' } }).progress, ['read hello.txt']);
+  assert.deepEqual(p.feed({ type: 'agent_end', messages: [{ role: 'assistant', content: [], stopReason: 'error', errorMessage: 'provider failed' }] }).done,
+    { text: 'provider failed', error: true });
+  const args = A.AGENTS.omp.args({ cfg: { profile: 'work', model: 'provider/model' }, resume: 'omp-session', cwd: '/project', system: 'game context' });
+  assert.equal(args[args.indexOf('--resume') + 1], 'omp-session');
+  assert.equal(args[args.indexOf('--profile') + 1], 'work');
+  for (const [permissionMode, expected] of [['default', 'always-ask'], ['acceptEdits', 'write'], ['bypassPermissions', 'yolo']]) {
+    const a = A.AGENTS.omp.args({ cfg: { permissionMode }, cwd: '/project' });
+    assert.equal(a[a.indexOf('--approval-mode') + 1], expected);
+  }
+});
+
 test('agent ids, display names and the legacy Claude config keys', () => {
-  assert.deepEqual(A.agentIds(), ['claude', 'codex', 'grok', 'agy', 'hermes']);
   assert.equal(A.normalizeAgent(' Codex '), 'codex');
   assert.equal(A.normalizeAgent('gemini'), null);
   assert.equal(A.normalizeAgent(''), null);

@@ -1,6 +1,16 @@
 # Agents
 
-The bridge can drive three coding agents: Claude Code, OpenAI Codex and xAI's Grok Build. This page is the reference for each: what to install, how the bridge starts it, what its permission settings mean, and what it cannot do. The code is `bridge/agents.js`, one entry per agent; `bridge.js` only knows the interface (build the arguments, hand over the prompt, read the stream).
+## omp / Tern
+
+- **Executable:** `omp` on PATH, or `agents.omp.path` pointing to the standalone/Tern-bundled executable. Run `omp` once to configure a provider. `tern.exe` is a UI launcher, not this protocol endpoint.
+- **Command:** `omp -p --mode json --cwd <folder> --no-title --no-pty --wait-async --approval-mode <tier> [--profile <profile>] [--model <model>] [--resume <session>] [--append-system-prompt <context>]`; prompt on stdin.
+- **Session:** the JSON `session` header's `id` is saved for `--resume`. Every WoW chat owns its session; no existing Tern conversation is attached.
+- **Output:** tool execution events become progress; completed assistant messages supply text; `agent_end` selects the latest reply. User messages, thinking and incremental snapshots are not echoed. Error/aborted stop reasons are errors.
+- **Permissions:** `default` → `always-ask`, `acceptEdits` → `write`, `bypassPermissions` → `yolo`. Calls needing approval fail closed headlessly. These tiers do not sandbox filesystem/network access. Use omp policies, not Claude-style allow/deny rules. No in-game Allow & retry for omp.
+- **Tern scope:** its bundled CLI and profiles are supported; UI windows, artifacts and interactive dialogs are not mirrored.
+
+
+The bridge drives Claude Code, OpenAI Codex, Grok Build, Antigravity, Hermes and omp. Each section describes its executable, headless protocol and permission limits. `bridge/agents.js` implements the shared adapter contract.
 
 ## Choosing one
 

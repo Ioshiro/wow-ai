@@ -6,6 +6,7 @@
 //   claude  Claude Code   `claude -p --output-format stream-json`, prompt on stdin
 //   codex   OpenAI Codex  `codex exec --json`, prompt on stdin
 //   grok    xAI Grok      `grok --prompt-file … --output-format streaming-json`
+//   omp     omp/Tern  `omp -p --mode json`, prompt on stdin
 //
 // Everything is pure (no I/O) except resolveCommand, which looks for the
 // executable on disk. Adding an agent: an entry in AGENTS (args, input, parser,
@@ -325,6 +326,36 @@ function hermesParser() {
     },
   };
 }
+// OMP print-mode JSON: completed assistant messages are authoritative, not
+// deltas or message_start snapshots (which may already contain the full text).
+function ompParser() {
+  let last = null;
+  return {
+    feed(ev) {
+      const out = empty();
+      if (ev.type === 'session' && ev.id) out.session = ev.id;
+      if (ev.type === 'tool_execution_start') {
+        const input = ev.args || {};
+        const names = { bash: 'Bash', read: 'Read', edit: 'Edit', write: 'Write', grep: 'Grep', glob: 'Glob', task: 'Agent', web_search: 'WebSearch' };
+        out.progress.push(describeToolUse({ name: names[ev.toolName] || ev.toolName, input: { ...input, file_path: input.path } }));
+      } else if (ev.type === 'message_end' && ev.message?.role === 'assistant') {
+        last = ev.message;
+        const text = (Array.isArray(last.content) ? last.content : []).filter(b => b.type === 'text').map(b => b.text || '').join('\n');
+        if (text.trim()) out.progress.push(snippet(text));
+      } else if (ev.type === 'agent_end') {
+        const messages = Array.isArray(ev.messages) ? ev.messages : [];
+        last = messages.findLast(m => m.role === 'assistant') || last;
+        if (last) {
+          const text = (Array.isArray(last.content) ? last.content : []).filter(b => b.type === 'text').map(b => b.text || '').join('\n');
+          const error = last.stopReason === 'error' || last.stopReason === 'aborted';
+          out.done = { text: error ? last.errorMessage || text || `omp stopped: ${last.stopReason}` : text, error };
+        }
+      }
+      return out;
+    },
+  };
+}
+
 
 // ---------------------------------------------------------------------------
 // The table
@@ -476,6 +507,23 @@ const AGENTS = {
     },
     env: env => env, parser: hermesParser,
   },
+  omp: {
+    name: 'omp', command: 'omp',
+    install: 'Install omp (standalone or bundled with Tern), then run `omp` once to configure a provider.',
+    windowsPaths: () => [], posixPaths: () => [],
+    args({ cfg, resume, cwd, system }) {
+      const a = ['-p', '--mode', 'json', '--cwd', cwd, '--no-title', '--no-pty', '--wait-async'];
+      const modes = { default: 'always-ask', acceptEdits: 'write', bypassPermissions: 'yolo' };
+      a.push('--approval-mode', modes[cfg.permissionMode] || 'write');
+      if (cfg.model) a.push('--model', cfg.model);
+      if (cfg.profile) a.push('--profile', cfg.profile);
+      if (system) a.push('--append-system-prompt', system);
+      if (resume) a.push('--resume', resume);
+      return a.concat(Array.isArray(cfg.extraArgs) ? cfg.extraArgs : []);
+    },
+    input: ({ prompt }) => ({ stdin: prompt }),
+    env: env => env, parser: ompParser,
+  },
 };
 
 const DEFAULT_AGENT = 'claude';
@@ -600,6 +648,6 @@ function resolveCommand(id, cfg = {}) {
 module.exports = {
   AGENTS, DEFAULT_AGENT, agentIds, normalizeAgent, displayName, agentConfig,
   grokRules, snippet, contextBlock,
-  claudeParser, codexParser, grokParser, agyParser, hermesParser, codexItemLine, grokCall, grokRefusal, shellInner,
+  claudeParser, codexParser, grokParser, agyParser, hermesParser, ompParser, codexItemLine, grokCall, grokRefusal, shellInner,
   resolveCommand, unwrapShim, nativeNextTo,
 };

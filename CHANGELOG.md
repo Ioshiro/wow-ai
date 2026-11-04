@@ -4,6 +4,11 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### Added
+
+- omp/Tern-bundled CLI adapter (`/wow-ai agent omp`): per-chat saved sessions, tool progress, completed assistant replies, optional profile/model, explicit headless approval tiers and background-work completion. Tern UI conversations/artifacts are not attached.
+
+
 ## [0.5.0] - 2026-11-04
 
 ### Added

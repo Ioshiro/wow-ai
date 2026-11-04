@@ -17,7 +17,7 @@ The bridge reads `config.json` once at start. Restart it after editing, except f
 
 | Key | Default | Meaning |
 |---|---|---|
-| `agent` | `"claude"` | The agent for chats that have not picked one with `/wow-ai agent`. One of `claude`, `codex`, `grok`, `agy`, `hermes`; the bridge refuses to start on anything else. |
+| `agent` | `"claude"` | Default agent: `claude`, `codex`, `grok`, `agy`, `hermes`, or `omp`. Unknown names prevent startup. |
 | `agents.<id>` | one block per agent | That agent's settings, below. A missing block means the defaults. |
 
 Keys under `agents.claude`, `agents.codex`, `agents.grok`, `agents.agy` and `agents.hermes` (what each one means per agent is spelled out in [AGENTS.md](AGENTS.md)):
@@ -31,6 +31,9 @@ Keys under `agents.claude`, `agents.codex`, `agents.grok`, `agents.agy` and `age
 | `path` | `""` | Full path to the executable. Empty means: look in the installer's folder, then (for Codex) `CODEX_BIN`, then `PATH`, then npm's launcher. A `.js` path is run with the bridge's Node. |
 | `extraArgs` | `[]` | More command-line arguments, added verbatim (before Codex's `resume` subcommand). |
 | `networkAccess` (codex only) | `false` | `true` lets commands inside Codex's `workspace-write` sandbox reach the network (`-c sandbox_workspace_write.network_access=true`). |
+| `profile` (omp only) | `""` | Named omp profile for credentials, settings and sessions. Empty uses normal CLI resolution. |
+
+`agents.omp` accepts `path`, `model`, `profile`, `permissionMode`, and `extraArgs`. It runs the standalone or Tern-bundled omp CLI, not the Tern UI. `default` maps to `always-ask`, `acceptEdits` to `write`, and `bypassPermissions` to `yolo`. These are approval tiers, not containment; writes are not restricted to the working directory. Headless approval requests fail closed. Claude-style allow/deny rules are not translated; configure policies in omp. `--wait-async` retains background work until finished or the bridge timeout expires.
 
 A `config.json` from before agents existed kept Claude's settings at the top level (`claudePath`, `model`, `permissionMode`, `allowedTools`). The bridge still reads them, under anything in `agents.claude`; `setup.js` moves them down.
 

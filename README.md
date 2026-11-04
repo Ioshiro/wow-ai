@@ -37,8 +37,15 @@ The bridge drives whichever of these you have installed; each chat can use a dif
 | **Grok Build** (`grok`) | `grok --prompt-file … --output-format streaming-json`, resumed with `-r` | `permissionMode` + the same `allowedTools` rules, translated to Grok's globs | yes, when Grok reports a refused tool |
 | **Antigravity** (`agy`) | `agy -p=<prompt> --output-format stream-json`, resumed with `--conversation` | Antigravity permission switches | no |
 | **Hermes** (`hermes`) | `hermes chat --query-file -`, resumed with `--resume` | default only; the bridge never uses `--yolo` | no |
+| **omp / Tern** (`omp`) | `omp -p --mode json`, resumed with `--resume` | approval tiers, not an OS sandbox; headless approvals fail closed | no |
 
 `agent` in `bridge/config.json` is the default (`claude`). `/wow-ai agent codex` switches the current chat, or right-click a chat in the left panel and pick **Agent...**; the reply bubbles and the game-chat echo are labelled with whoever answered. A session belongs to the agent that made it, so a chat that changes agent starts a fresh session there (its transcript stays). Install notes, the exact command lines, what each permission mode means per agent, and known limits are in [docs/AGENTS.md](docs/AGENTS.md).
+
+### omp bundled with Tern
+
+Select `/wow-ai agent omp`, or set `"agent": "omp"` in `bridge/config.json`. The bridge runs `omp`, not `tern.exe`. Tern's bundled `omp.exe` works when its bin directory is on PATH; otherwise set `agents.omp.path` to the full executable path (on Windows, typically `%LOCALAPPDATA%\Tern\omp\bin\omp.exe`, with the variable expanded). `agents.omp.profile` selects a named omp profile; empty uses the CLI's normal provider/settings configuration.
+
+Each WoW chat owns a separate saved omp session. This does not attach to an already-open Tern conversation or mirror its artifacts/dialogs into WoW. Tool progress and plain-text replies use the existing addon transport. `default` allows read-tier tools; `acceptEdits` allows read/write tiers; calls requiring approval fail closed. These modes do not restrict filesystem writes to the project directory. Use omp policies deliberately before choosing `bypassPermissions` (yolo).
 
 ## Requirements
 
