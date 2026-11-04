@@ -1,0 +1,3 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict');const fengari=require('fengari');const{lua,lauxlib,lualib,to_luastring,to_jsstring}=fengari;const{luaTable}=require('../bridge/protocol');
+test('live events preserve opaque ids and untrusted text as data in Lua slots',()=>{const L=lauxlib.luaL_newstate();lualib.luaL_openlibs(L);const text='quote " and \\ slash\nnew line | game';const source=luaTable('Slot',[],{liveEvents:[{id:'instance:session:42',chat:'c',status:'done',text}]});assert.equal(lauxlib.luaL_dostring(L,to_luastring(source)),lua.LUA_OK);assert.equal(lauxlib.luaL_dostring(L,to_luastring('return Slot.liveEvents[1].text')),lua.LUA_OK);assert.equal(to_jsstring(lua.lua_tostring(L,-1)),text);lua.lua_close(L);});

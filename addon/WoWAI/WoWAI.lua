@@ -213,8 +213,9 @@ local function InitDB()
 	s.cwd = s.cwd or DEFAULT_CWD
 	s.width = s.width or 780
 	s.height = s.height or 500
-	db.lastSeq = db.lastSeq or 0
-	-- Chats deleted in game that the bridge hasn't confirmed forgetting yet.
+    db.lastSeq = db.lastSeq or 0
+    db.liveSeen = db.liveSeen or {}
+    db.liveAttached = db.liveAttached or {}
 	db.forget = db.forget or {}
 	-- Identifies this counter's lifetime. If the saved data is ever reset, a new
 	-- session lets the bridge tell "message #1 again" from "message #1, already done".
@@ -775,6 +776,64 @@ local function ImportRestore(r)
 	end
 end
 
+local function HasLiveAttached()
+    for _, attached in pairs(db.liveAttached or {}) do
+        if attached then return true end
+    end
+    return false
+end
+
+local function SendLiveAck(eventId, chatId)
+    if not eventId or eventId == "" then return end
+    db.lastSeq = db.lastSeq + 1
+    local id = db.lastSeq
+    local text = tostring(eventId)
+    local flags = "control=eventack;target=0"
+    if db.settings.mode == "pixel" then
+        run.outbound[id] = { chat = chatId or "", cwd = "", flags = flags, name = "", text = text, control = "eventack", sentAt = GetTime() }
+        run.sentAt = GetTime()
+        RefreshStrip()
+    else
+        db.outbox = { id = id, session = db.session, chat = chatId or "", text = ToHex(text), cwd = "", control = "eventack", target = 0, t = time() }
+    end
+end
+
+local function LiveAckPending(eventId)
+    for _, rec in pairs(run.outbound or {}) do
+        if rec.control == "eventack" and rec.text == eventId and not rec.acked then return true end
+    end
+    return false
+end
+
+local function ApplyLiveEvents(events)
+    local changed = false
+    for _, e in ipairs(events or {}) do
+        if type(e) == "table" and type(e.id) == "string" and e.id ~= "" then
+            local seen = db.liveSeen[e.id]
+            if not seen then
+                db.liveSeen[e.id] = true
+                local c = FindChat(e.chat)
+                if c then
+                    local status = e.status
+                    c.liveStatus = status
+                    c.liveText = tostring(e.text or "")
+                    c.liveSession = e.session
+                    c.liveInstance = e.instance
+                    if status == "detached" or status == "session_changed" then db.liveAttached[c.id] = nil else db.liveAttached[c.id] = true end
+                    if status == "done" then
+                        AddHistory(c, "assistant", c.liveText, e.id, nil, "omp-live")
+                        if not (ui.frame and ui.frame:IsShown() and db.activeChat == c.id) then c.unread = (c.unread or 0) + 1 end
+                        WoWAI.Notify(c, c.liveText, "omp-live")
+                    end
+                    changed = true
+                end
+            end
+            if not LiveAckPending(e.id) then SendLiveAck(e.id, e.chat) end
+        end
+    end
+    if changed then WoWAI.Render() end
+end
+
 local function TryLoadSlot(why)
 	local name = FreeSlot()
 	if not name then
@@ -809,8 +868,9 @@ local function TryLoadSlot(why)
 	if type(data) == "table" and type(data.acks) == "table" then
 		for _, id in ipairs(data.acks) do MarkAcked(id) end
 	end
-	local matched = ApplyReplies(type(data) == "table" and data.replies or nil)
-	if type(data) == "table" and data.restore then ImportRestore(data.restore) end
+    local matched = ApplyReplies(type(data) == "table" and data.replies or nil)
+    if type(data) == "table" and data.restore then ImportRestore(data.restore) end
+    if type(data) == "table" then ApplyLiveEvents(data.liveEvents) end
 	if type(data) == "table" and data.map and WoWAIMap then WoWAIMap.Sync(data.map) end
 	if why == "signal" and not matched then
 		run.signalUnreliable = true
@@ -821,15 +881,22 @@ end
 local function Tick()
 	if not db then return end
 	local now = GetTime()
-	PollPresence()
+    local priorBeats = run.presence and run.presence.beats or 0
+    PollPresence()
+    local currentBeats = run.presence and run.presence.beats or 0
+    if db.settings.mode == "pixel" and HasLiveAttached() and currentBeats > priorBeats then TryLoadSlot("live-presence") end
 	-- Without presence beats, the only evidence is a slot read; spend one every
 	-- IDLE_POLL_SECONDS while idle so the light still reflects reality (and stays
 	-- green while the bridge is up: BridgeState allows for this interval).
-	if not PresenceWorks() and db.settings.mode == "pixel" and not AnyPending()
-		and now - (run.lastIdlePoll or -1e9) >= IDLE_POLL_SECONDS then
-		run.lastIdlePoll = now
-		TryLoadSlot("idle")
-	end
+    if not PresenceWorks() and db.settings.mode == "pixel" and HasLiveAttached()
+        and now - (run.lastLivePoll or -1e9) >= 30 then
+        run.lastLivePoll = now
+        TryLoadSlot("live")
+    elseif not PresenceWorks() and db.settings.mode == "pixel" and not AnyPending()
+        and not HasLiveAttached() and now - (run.lastIdlePoll or -1e9) >= IDLE_POLL_SECONDS then
+        run.lastIdlePoll = now
+        TryLoadSlot("idle")
+    end
 	WoWAI.UpdateDot()
 	WoWAI.CheckConnection()
 	if db.settings.mode ~= "pixel" then return end
@@ -914,9 +981,10 @@ local function ProcessInbox()
 	if type(inbox.cwd) == "string" and inbox.cwd ~= "" then run.bridgeCwd = inbox.cwd end
 	if type(inbox.agent) == "string" and inbox.agent ~= "" then run.bridgeAgent = inbox.agent end
 	if type(inbox.agents) == "table" and #inbox.agents > 0 then run.bridgeAgents = inbox.agents end
-	if type(inbox.acks) == "table" then for _, id in ipairs(inbox.acks) do MarkAcked(id) end end
+    if type(inbox.acks) == "table" then for _, id in ipairs(inbox.acks) do MarkAcked(id) end end
 	ApplyReplies(inbox.replies)
 	if inbox.restore then ImportRestore(inbox.restore) end
+	ApplyLiveEvents(inbox.liveEvents)
 	if inbox.map and WoWAIMap then WoWAIMap.Sync(inbox.map) end
 end
 
@@ -1208,19 +1276,19 @@ end
 
 -- Controls are independent records; the original job remains pending until terminal.
 function WoWAI.SendControl(c, control, text)
-	if not c or not c.pendingId then return false end
-	text = tostring(text or "")
+    if not c or (not c.pendingId and not db.liveAttached[c.id]) then return false end
+    text = tostring(text or "")
 	if #text > Codec.MAX_PAYLOAD - 300 then
 		AddHistory(c, "system", "Control message is too long; shorten it and try again.")
 		WoWAI.Render()
 		return false
 	end
 	db.lastSeq = db.lastSeq + 1
-	local id, target = db.lastSeq, c.pendingId
-	local flags = "control=" .. control .. ";target=" .. target
-	if c.agent and c.agent ~= "" then flags = flags .. ";agent=" .. c.agent end
-	db.outbox = { id = id, session = db.session, chat = c.id, text = ToHex(text), cwd = ToHex(c.cwd),
-		agent = (c.agent and c.agent ~= "") and c.agent or nil, control = control, target = target, t = time() }
+    local id, target = db.lastSeq, c.pendingId or 0
+    local flags = "control=" .. control .. ";target=" .. target
+    if c.agent and c.agent ~= "" then flags = flags .. ";agent=" .. c.agent end
+    db.outbox = { id = id, session = db.session, chat = c.id, text = ToHex(text), cwd = ToHex(c.cwd),
+        agent = (c.agent and c.agent ~= "") and c.agent or nil, control = control, target = target, t = time() }
 	if db.settings.mode == "pixel" then
 		run.outbound[id] = { chat = c.id, cwd = c.cwd, flags = flags, name = c.name, text = text,
 			control = control, sentAt = GetTime() }
@@ -1534,6 +1602,7 @@ function WoWAI.SetAgent(rest, c)
 		return
 	end
 	local changed = rest ~= (c.agent or "")
+	if changed then db.liveAttached[c.id] = nil end
 	c.agent = rest
 	if rest ~= "" then
 		AddHistory(c, "system", "agent set to " .. AgentName(rest) .. (changed and #c.history > 1 and "; the next message starts a fresh session with it" or ""))
@@ -1637,9 +1706,10 @@ function WoWAI.DeleteChat(id)
 	if id then c, idx = FindChat(id) end
 	if not c then c, idx = ActiveChat() end
 	if not c then return end
-	WoWAI.CloseInteraction(c.id)
-	run.interactions[c.id] = nil
-	ForgetOnBridge(c)
+    WoWAI.CloseInteraction(c.id)
+    run.interactions[c.id] = nil
+    db.liveAttached[c.id] = nil
+    ForgetOnBridge(c)
 	if #db.chats == 1 then
 		wipe(c.history)
 		c.pendingId, c.progress, c.unread, c.draft = nil, nil, 0, nil
@@ -1863,7 +1933,9 @@ function WoWAI.UpdateStatus()
 			end
 		end
 		end
-	elseif not WoWAI.IsConnected() then
+    elseif c and c.liveStatus and db.liveAttached[c.id] then
+        s = "Live " .. tostring(c.liveStatus) .. (c.liveText ~= "" and (": " .. c.liveText) or "")
+    elseif not WoWAI.IsConnected() then
 		if run.connectingAt and run.sendOnConnect then
 			s = "Connecting to the bridge... your message goes out as soon as it answers"
 		elseif run.connectingAt then
@@ -3105,10 +3177,10 @@ SlashCmdList["WOWAI"] = function(msg)
 	elseif cmd == "review" or cmd == "session-new" then
 		if not c.pendingId then WoWAI.Send(cmd == "review" and "/review" or "/new")
 		else AddHistory(c, "system", "Wait for the current job before starting this command."); WoWAI.Render() end
-	elseif cmd == "followup" then
-		if c.pendingId and (ChatAgent(c) == "omp" or (run.interactions[c.id] and run.interactions[c.id].interactive)) and rest ~= "" then
-			if WoWAI.SendControl(c, "followup", Wire(rest)) then AddHistory(c, "user", "Follow-up: " .. rest); WoWAI.Render() end
-		else AddHistory(c, "system", "Follow-up requires a working omp chat and some text."); WoWAI.Render() end
+    elseif cmd == "followup" then
+        if (c.pendingId or db.liveAttached[c.id]) and (ChatAgent(c) == "omp" or ChatAgent(c) == "omp-live" or (run.interactions[c.id] and run.interactions[c.id].interactive)) and rest ~= "" then
+            if WoWAI.SendControl(c, "followup", Wire(rest)) then AddHistory(c, "user", "Follow-up: " .. rest); WoWAI.Render() end
+        else AddHistory(c, "system", "Follow-up requires a working omp chat and some text."); WoWAI.Render() end
 	elseif cmd == "new" then
 		WoWAI.NewChat(rest)
 	elseif cmd == "chat" or cmd == "chats" then
@@ -3263,22 +3335,24 @@ SlashCmdList["WOWAI"] = function(msg)
 		AddHistory(c, "system", "Diagnostics:\n" .. table.concat(lines, "\n"))
 		WoWAI.Render()
 		WoWAI.Toggle(true)
-	elseif cmd == "cancel" then
-		if c.pendingId then
-			if ChatAgent(c) == "omp" or (run.interactions[c.id] and run.interactions[c.id].interactive) then
-				if WoWAI.SendControl(c, "abort", "") then AddHistory(c, "system", "Abort requested for #" .. c.pendingId .. "; waiting for the bridge.") end
-				WoWAI.Render()
-				return
-			end
-			AddHistory(c, "system", "Gave up waiting on #" .. c.pendingId)
-			run.outbound[c.pendingId] = nil
-			if run.act then run.act[c.id] = nil end
-			c.pendingId = nil
-			c.progress = nil
-			RefreshStrip()
-			if not AnyPending() then keyCatcher:Hide() end
-		end
-		WoWAI.Render()
+    elseif cmd == "cancel" then
+        if c.pendingId then
+            if ChatAgent(c) == "omp" or (run.interactions[c.id] and run.interactions[c.id].interactive) then
+                if WoWAI.SendControl(c, "abort", "") then AddHistory(c, "system", "Abort requested for #" .. c.pendingId .. "; waiting for the bridge.") end
+                WoWAI.Render()
+                return
+            end
+            AddHistory(c, "system", "Gave up waiting on #" .. c.pendingId)
+            run.outbound[c.pendingId] = nil
+            if run.act then run.act[c.id] = nil end
+            c.pendingId = nil
+            c.progress = nil
+            RefreshStrip()
+            if not AnyPending() then keyCatcher:Hide() end
+        elseif db.liveAttached[c.id] then
+            if WoWAI.SendControl(c, "abort", "") then AddHistory(c, "user", "Cancel"); WoWAI.Render() end
+        end
+        WoWAI.Render()
 	elseif cmd == "clear" then
 		wipe(c.history)
 		WoWAI.Render()

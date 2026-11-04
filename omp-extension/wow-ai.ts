@@ -18,6 +18,7 @@ export default function wowAI(pi: ExtensionAPI) {
   let sessionId = "";
   let lastText = "";
   let revision = 0;
+  const replies: { revision: number; text: string }[] = [];
   let running = false;
   let closed = false;
   let timer: ReturnType<ExtensionContext["setInterval"]> | undefined;
@@ -46,6 +47,7 @@ export default function wowAI(pi: ExtensionAPI) {
     if (current !== sessionId) {
       sessionId = current;
       lastText = "";
+      replies.length = 0;
       revision++;
       approvals.clear();
       asks.clear();
@@ -81,6 +83,7 @@ export default function wowAI(pi: ExtensionAPI) {
       await atomicJson("metadata.json", {
         version: 1, instance, token, sessionId, cwd: latestContext.cwd, pid: process.pid,
         pane: process.env.TERN_PANE || "", status: status(latestContext), lastText, revision,
+        replies,
         updatedAt: Date.now(),
       });
     });
@@ -167,9 +170,13 @@ export default function wowAI(pi: ExtensionAPI) {
     if (!timer) return;
     latestContext = ctx; syncSession(ctx); running = true; lastText = "";
   });
-  pi.on("agent_end", (_event, ctx) => {
+  pi.on("agent_end", (event, ctx) => {
     if (!timer) return;
-    latestContext = ctx; syncSession(ctx); running = false; revision++;
+    latestContext = ctx; syncSession(ctx); running = false;
+    if (event.yielded === false) return;
+    revision++;
+    replies.push({ revision, text: lastText });
+    if (replies.length > 128) replies.shift();
   });
   pi.on("message_end", (event, ctx) => {
     if (!timer) return;

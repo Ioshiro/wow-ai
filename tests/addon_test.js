@@ -764,3 +764,33 @@ test('reload controls carry their own sequence and original target', () => {
   assert.equal(Buffer.from(vm.evaluate('WoWAIDB.outbox.text'), 'hex').toString(), 'next');
   assert.equal(vm.num('WoWAIDB.chats[1].pendingId'), id);
 });
+
+test('live events deduplicate, persist across reload, preserve pending, and ack independently', () => {
+  const vm = newVM(); login(vm); connect(vm);
+  vm.run('WoWAI.Send("pending work")');
+  const chat = vm.evaluate('WoWAIDB.chats[1].id');
+  const pending = vm.num('WoWAIDB.chats[1].pendingId');
+  nextSlot(vm, `{ now=time(), liveEvents={{id="evt-1",chat="${chat}",status="working",text="Input in Tern",session="s",instance="i"},{id="evt-2",chat="${chat}",status="done",text="finished",session="s",instance="i"}} }`);
+  vm.run('STUB.now=STUB.now+6; STUB.Tick()');
+  assert.equal(vm.num('WoWAIDB.chats[1].pendingId'), pending);
+  assert.equal(vm.num('#WoWAIDB.chats[1].history'), 2);
+  assert.equal(vm.evaluate('WoWAIDB.chats[1].history[2].agent'), 'omp-live');
+  assert.equal(vm.evaluate('WoWAIDB.liveSeen["evt-1"]'), 'true');
+  assert.equal(stripRecords(vm).some(r => r.flags.includes('control=eventack') && r.text === 'evt-2'), true);
+  vm.run('WoWAI_SlotData = nil; STUB.FireEvent("PLAYER_LOGIN")');
+  nextSlot(vm, `{ now=time(), liveEvents={{id="evt-2",chat="${chat}",status="done",text="finished",session="s",instance="i"}} }`);
+  vm.run('STUB.now=STUB.now+31; STUB.Tick()');
+  assert.equal(vm.num('#WoWAIDB.chats[1].history'), 2);
+});
+
+test('live attached chats accept followup and cancel without a pending id', () => {
+  const vm = newVM(); login(vm); connect(vm);
+  vm.run('WoWAIDB.chats[1].agent="omp-live"');
+  const chat = vm.evaluate('WoWAIDB.chats[1].id');
+  nextSlot(vm, `{ now=time(), liveEvents={{id="attach-1",chat="${chat}",status="attached",text="ready",session="s",instance="i"}} }`);
+  vm.run('WoWAIDB.liveAttached[WoWAIDB.chats[1].id]=true; STUB.now=STUB.now+31; STUB.Tick(); SlashCmdList.WOWAI("followup next step"); SlashCmdList.WOWAI("cancel")');
+  const records = stripRecords(vm);
+  assert.equal(records.filter(r => r.flags.includes('control=followup')).length, 1);
+  assert.equal(records.filter(r => r.flags.includes('control=abort')).length, 1);
+  assert.equal(records.every(r => r.flags.includes('target=0') || !r.flags.includes('control=')), true);
+});

@@ -173,7 +173,7 @@ function parseOutbox(src) {
   if (agent && agent[1]) job.agent = agent[1].toLowerCase();
   const allow = b.match(/\["allow"\]\s*=\s*"([0-9a-fA-F]*)"/);
   if (allow && allow[1]) job.allow = fromHex(allow[1]).split('\x1F').filter(Boolean);
-  const control = b.match(/\["control"\]\s*=\s*"(ui|steer|followup|abort|new)"/);
+  const control = b.match(/\["control"\]\s*=\s*"(ui|steer|followup|abort|new|eventack)"/);
   if (control) job.control = control[1];
   const target = b.match(/\["target"\]\s*=\s*(\d+)/);
   if (target) job.target = Number(target[1]);
@@ -332,6 +332,7 @@ function luaTable(globalName, records, opts = {}) {
     `\tagent = ${luaStr(opts.agent || '')},`,
     `\tagents = { ${agents.map(luaStr).join(', ')} },`,
     `\tacks = { ${(opts.acks || []).filter(Number.isSafeInteger).join(', ')} },`,
+    `\tliveEvents = ${luaDialog(opts.liveEvents || [])},`,
     '\treplies = {',
   ];
   for (const r of records) {

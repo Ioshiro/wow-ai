@@ -217,9 +217,12 @@ const ompSessions = new OmpSessions({
   log,
 });
 state.liveBindings ||= {};
+state.liveEvents ||= {};
 const liveSessions = new OmpLive({
   directory: process.env.WOW_AI_LIVE_DIR || path.join(HERE, 'live'), bindings: state.liveBindings,
   save: saveState, timeoutMs: cfg.timeoutMs,
+  events: state.liveEvents,
+  changed: () => publishNow(),
   publish(job, detail) { beat(job); publish(chatKey(job), { chat: job.chat, id: job.id, status: 'working', cwd: job.cwd, agent: 'omp-live', interactive: true, ...detail }, true); },
   complete: (job, status, text, session) => finish(job, status, text, session),
 });
@@ -318,7 +321,7 @@ function takeMapCommands(job, text) {
 // Slot file / Inbox.lua body: see protocol.luaTable.
 function slotFile(globalName, records, urgent = true) {
   const map = Date.now() < mapShareUntil && (urgent || mapLuaSize() <= MAP_PROGRESS_MAX) ? state.map : null;
-  return P.luaTable(globalName, records, { cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), map, acks: controlAcks.filter(a => a.session === currentAddonSession).map(a => a.id) });
+  return P.luaTable(globalName, records, { cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), map, liveEvents: liveSessions.snapshot(), acks: controlAcks.filter(a => a.session === currentAddonSession).map(a => a.id) });
 }
 
 function addonInstalled() {
@@ -479,6 +482,13 @@ function submit(job) {
   if (alreadyHandled(job)) return;
   currentAddonSession = job.session || '';
   if (job.control) {
+    if (job.control === 'eventack') {
+      markHandled(job);
+      controlAcks.push({ session: currentAddonSession, id: job.id });
+      if (controlAcks.length > 128) controlAcks.shift();
+      liveSessions.acknowledge(job.text);
+      saveState(); signal('ack', job.id, true); publishNow(); return;
+    }
     // Controls must bypass concurrency/turn queues: the turn may be blocked on
     // this exact answer. Mark before awaiting so pixel retransmits cannot replay.
     markHandled(job);
@@ -488,8 +498,9 @@ function submit(job) {
     if (controlAcks.length > 128) controlAcks.shift();
     publishNow();
     const active = running.get(chatKey(job));
-    const controller = active?.job.agent === 'omp-live' ? liveSessions : ompSessions;
-    controller.control(active?.job.agent === 'omp-live' ? sessKey(job) : chatKey(job), job).catch(error => log(`control #${job.id}: ${error.message}`));
+    const attached = active?.job.agent === 'omp-live' || A.normalizeAgent(job.agent || DEFAULT_AGENT) === 'omp-live';
+    const controller = attached ? liveSessions : ompSessions;
+    controller.control(attached ? sessKey(job) : chatKey(job), job).catch(error => log(`control #${job.id}: ${error.message}`));
     return;
   }
   if (job.ctx !== undefined) setContext(job);
@@ -517,11 +528,17 @@ function submit(job) {
     maybeOfferRestore(job);
     // Even an empty set: a client holding layers from a reset bridge must drop them.
     mapShareUntil = Date.now() + MAP_SHARE_MS;
+    liveSessions.refresh();
     publishNow();
     log(`hello from session ${job.session}${pendingRestore ? ' (restore offered)' : ''}`);
     return;
   }
   const key = chatKey(job);
+  if (A.normalizeAgent(job.agent || DEFAULT_AGENT) === 'omp-live') {
+    if (running.has(key) || liveSessions.active.has(sessKey(job))) return;
+    runJob(job);
+    return;
+  }
   const cur = running.get(key);
   if (cur && cur.job.id === job.id) return;
   const q = queued.get(key);
@@ -571,10 +588,15 @@ function runJob(job) {
   job.agent = agentId;
   if (agentId !== 'omp') ompSessions.drop(key);
   if (agentId === 'omp-live') {
-    running.set(key, { job });
+    // Live subscriptions never consume a dedicated-agent execution slot.
     noteMessage(job, 'user', job.text);
     liveSessions.run(sessKey(job), job).catch(error => finish(job, 'error', error.message));
     return;
+  }
+  if (state.liveBindings[sessKey(job)]) {
+    liveSessions.drop(sessKey(job));
+    delete state.liveBindings[sessKey(job)];
+    saveState();
   }
   const agent = A.AGENTS[agentId];
   const acfg = A.agentConfig(cfg, agentId);

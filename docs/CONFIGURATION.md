@@ -122,11 +122,12 @@ All of these are gitignored.
 | File | Contents |
 |---|---|
 | `bridge/config.json` | Your configuration. |
-| `bridge/state.json` | Agent session ids per chat, the folder and the agent each session ran with, handled message ids per addon session token, the presence counter, and the latest game context the addon sent (`context`). Delete it to forget all sessions. |
+| `bridge/state.json` | Agent session ids, folders, handled message ids, presence and game context; also `liveBindings` (continuous attachment cursors) and `liveEvents` (unacknowledged spontaneous replies/state). Deleting it forgets bindings and delivery cursors. |
 | `bridge/transcripts.json` | The last 200 messages of every chat, with the agent that wrote each reply, so the addon can recover its chats after the client wipes saved data. |
 | `bridge/mapjobs/` | One map command file per running job (`WOW_AI_MAP_FILE`), read and deleted when the job ends. Map layers themselves live in `state.json` (`map`). |
 | `bridge/bridge.log` | Everything printed to the console, with timestamps. Grows without bound; delete it whenever you like. |
 | `bridge/tmp/` | Prompt files for agents that read the prompt from disk (Grok). Each is deleted when its run ends. |
+| `bridge/live/` | Private extension IPC endpoints, including per-instance token, metadata and the newest 128 completed turns. Never commit or share this directory. `WOW_AI_LIVE_DIR` overrides its location. |
 
 ## `setup.js` flags
 

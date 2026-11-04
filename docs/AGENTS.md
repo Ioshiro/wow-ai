@@ -13,7 +13,7 @@
 
 ## Live attachment (`omp-live`)
 
-Load `omp-extension/wow-ai.ts` explicitly with `omp -e <absolute-path>` in the desktop process, then select `/wow-ai agent omp-live`. Send `/ai /sessions`, `/ai /attach <instance>`, ordinary text, `/ai /watch`, or `/ai /detach`. No process is spawned/resumed; the extension's existing process handles messages through `sendUserMessage`. Desktop composer contents are untouched. Busy messages steer; explicit follow-ups queue. Slash-command expansion and interactive dialogs remain desktop-only. A desktop session switch invalidates the binding until explicit reattachment. Detaching or bridge timeout does not kill the desktop process; cancelling an active watched job requests a real abort. The per-instance endpoint uses private local JSON files; see README for security and `WOW_AI_LIVE_DIR`. Loading the extension is opt-in, not part of setup.js.
+Load `omp-extension/wow-ai.ts` explicitly with `omp -e <absolute-path>` in the desktop process, then select `/wow-ai agent omp-live`. Send `/ai /sessions`, `/ai /attach <instance>`, ordinary text, or `/ai /detach`. Attach continuously observes later desktop turns until detach; no `/watch` is needed. No process is spawned/resumed. Text dispatch uses `sendUserMessage`, leaving the desktop composer untouched. Completed replies and state changes are queued durably and acknowledged separately from pending requests. Monitoring does not consume execution slots. Busy messages steer; explicit follow-ups queue. Slash commands and interactive dialogs remain desktop-only. Session switches require explicit reattachment. The extension keeps the latest 128 completed turns for outage recovery. See README for polling latency, security and `WOW_AI_LIVE_DIR`.
 
 
 
