@@ -715,3 +715,52 @@ test('reload mode writes the outbox for the bridge instead of drawing the strip'
   assert.equal(Buffer.from(vm.evaluate('WoWAIDB.outbox.allow'), 'hex').toString('utf8'), 'WebSearch\x1fBash(git:*)');
   assert.equal(decodeStrip(vm), null);
 });
+
+test('omp controls retain the pending job and approvals require explicit selection', () => {
+  const vm = newVM(); login(vm); connect(vm);
+  vm.run('WoWAIDB.chats[1].agent = "omp"; WoWAI.Send("work")');
+  const chat = vm.evaluate('WoWAIDB.chats[1].id');
+  const id = vm.num('WoWAIDB.chats[1].pendingId');
+  nextSlot(vm, `{ now=time(), replies={{chat="${chat}", id=${id}, status="working", interactive=true, ui={id="approval", method="confirm", title="Approve?", message="Run command?"}}} }`);
+  vm.run('STUB.now=STUB.now+6; STUB.Tick(); WoWAI.ShowInteraction(); WoWAI.SubmitInteraction()');
+  assert.equal(vm.num('WoWAIDB.chats[1].pendingId'), id);
+  assert.equal(stripRecords(vm).some(r => r.flags.includes('control=ui')), false);
+  vm.run('WoWAIInteraction.state.choice = {[2]=true}; WoWAI.SubmitInteraction()');
+  const reply = stripRecords(vm).find(r => r.flags.includes('control=ui'));
+  assert.equal(reply.text, 'approval\x1fconfirm\x1ffalse');
+  assert.ok(reply.flags.includes(`target=${id}`));
+  assert.notEqual(reply.id, id);
+  vm.run('WoWAI.Send("change direction"); SlashCmdList.WOWAI("followup later"); SlashCmdList.WOWAI("cancel")');
+  const controls = stripRecords(vm);
+  assert.ok(controls.some(r => r.flags.includes('control=steer') && r.text === 'change direction'));
+  assert.ok(controls.some(r => r.flags.includes('control=followup') && r.text === 'later'));
+  assert.ok(controls.some(r => r.flags.includes('control=abort')));
+  assert.equal(vm.num('WoWAIDB.chats[1].pendingId'), id);
+});
+
+test('omp ask encodes multi selection and custom text and clears obsolete prompts', () => {
+  const vm = newVM(); login(vm); connect(vm);
+  vm.run('WoWAIDB.chats[1].agent="omp"; WoWAI.Send("work")');
+  const chat = vm.evaluate('WoWAIDB.chats[1].id');
+  const id = vm.num('WoWAIDB.chats[1].pendingId');
+  nextSlot(vm, `{ now=time(), replies={{chat="${chat}", id=${id}, status="working", interactive=true, ui={id="ask1", method="ask", questions={{question="Choose", multi=true, options={{label="A"},{label="B"}}}}}}} }`);
+  vm.run('STUB.now=STUB.now+6; STUB.Tick(); WoWAI.ShowInteraction(); WoWAIInteraction.state.q1={[1]=true,[2]=true}; WoWAIInteraction.state.custom1="hi"; WoWAI.SubmitInteraction()');
+  const reply = stripRecords(vm).find(r => r.flags.includes('control=ui'));
+  assert.equal(reply.text, 'ask1\x1fask\x1f1,2:6869');
+  nextSlot(vm, `{ now=time(), acks={${reply.id}}, replies={{chat="${chat}", id=${id}, status="working", interactive=true}} }`);
+  vm.run('STUB.now=STUB.now+20; STUB.Tick(); WoWAI.ShowInteraction()');
+  assert.equal(vm.evaluate('WoWAIInteraction.shown'), 'false');
+  assert.equal(stripRecords(vm).some(r => r.id === reply.id), false);
+});
+
+test('reload controls carry their own sequence and original target', () => {
+  const vm = newVM(); login(vm);
+  vm.run('SlashCmdList.WOWAI("mode reload"); WoWAIDB.chats[1].agent="omp"; WoWAI.Send("work")');
+  const id = vm.num('WoWAIDB.chats[1].pendingId');
+  vm.run('SlashCmdList.WOWAI("followup next")');
+  assert.equal(vm.evaluate('WoWAIDB.outbox.control'), 'followup');
+  assert.equal(vm.num('WoWAIDB.outbox.target'), id);
+  assert.notEqual(vm.num('WoWAIDB.outbox.id'), id);
+  assert.equal(Buffer.from(vm.evaluate('WoWAIDB.outbox.text'), 'hex').toString(), 'next');
+  assert.equal(vm.num('WoWAIDB.chats[1].pendingId'), id);
+});

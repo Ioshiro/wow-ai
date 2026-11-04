@@ -37,7 +37,7 @@ The bridge drives whichever of these you have installed; each chat can use a dif
 | **Grok Build** (`grok`) | `grok --prompt-file … --output-format streaming-json`, resumed with `-r` | `permissionMode` + the same `allowedTools` rules, translated to Grok's globs | yes, when Grok reports a refused tool |
 | **Antigravity** (`agy`) | `agy -p=<prompt> --output-format stream-json`, resumed with `--conversation` | Antigravity permission switches | no |
 | **Hermes** (`hermes`) | `hermes chat --query-file -`, resumed with `--resume` | default only; the bridge never uses `--yolo` | no |
-| **omp / Tern** (`omp`) | `omp -p --mode json`, resumed with `--resume` | approval tiers, not an OS sandbox; headless approvals fail closed | no |
+| **omp / Tern** (`omp`) | persistent `omp --mode rpc-ui`, resumed with `--resume` after bridge restart | native approval dialogs in the addon; approval tiers, not an OS sandbox | native request/response, not allow-and-retry |
 
 `agent` in `bridge/config.json` is the default (`claude`). `/wow-ai agent codex` switches the current chat, or right-click a chat in the left panel and pick **Agent...**; the reply bubbles and the game-chat echo are labelled with whoever answered. A session belongs to the agent that made it, so a chat that changes agent starts a fresh session there (its transcript stays). Install notes, the exact command lines, what each permission mode means per agent, and known limits are in [docs/AGENTS.md](docs/AGENTS.md).
 
@@ -45,7 +45,11 @@ The bridge drives whichever of these you have installed; each chat can use a dif
 
 Select `/wow-ai agent omp`, or set `"agent": "omp"` in `bridge/config.json`. The bridge runs `omp`, not `tern.exe`. Tern's bundled `omp.exe` works when its bin directory is on PATH; otherwise set `agents.omp.path` to the full executable path (on Windows, typically `%LOCALAPPDATA%\Tern\omp\bin\omp.exe`, with the variable expanded). `agents.omp.profile` selects a named omp profile; empty uses the CLI's normal provider/settings configuration.
 
-Each WoW chat owns a separate saved omp session. This does not attach to an already-open Tern conversation or mirror its artifacts/dialogs into WoW. Tool progress and plain-text replies use the existing addon transport. `default` allows read-tier tools; `acceptEdits` allows read/write tiers; calls requiring approval fail closed. These modes do not restrict filesystem writes to the project directory. Use omp policies deliberately before choosing `bypassPermissions` (yolo).
+Each WoW chat owns a dedicated persistent omp process/session. This does not attach to an already-open Tern conversation or mirror artifacts. The addon shows `[Input]` and a **Respond** button for native omp questions, review menus and approvals. Select an answer and explicitly Submit; Esc/close only hides the dialog and never approves. **Cancel request** cancels that dialog. Secret/login inputs must be handled outside WoW.
+
+While omp works, ordinary messages steer it; `/wow-ai followup <text>` queues a follow-up. `/wow-ai cancel` requests a real abort and waits for completion. When idle, `/wow-ai session-new` creates a fresh omp session in the same project, and `/wow-ai review` opens omp's actual Review Mode menu, including uncommitted changes. These are distinct from `/wow-ai new`, which creates another addon chat. Four chats can work concurrently by default (`maxParallel`); existing configs keep their chosen limit.
+
+The bridge waits for session settlement, including background work, rather than treating an intermediate answer as finished. Restarting the bridge resumes saved session IDs on the next message; pending dialogs cannot be restored across a killed process. `default` allows read-tier tools, `acceptEdits` read/write tiers, and execution approval is requested in game. These tiers do not sandbox filesystem/network access. No yolo is needed for interactive approval support. Login, rich artifacts and graphical overlays remain desktop-only.
 
 ## Requirements
 

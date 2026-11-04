@@ -123,6 +123,8 @@ function parseFlags(flags) {
     else if (tok === 'c') out.context = true;
     else if (tok.startsWith('allow=')) out.allow.push(...tok.slice(6).split(',').map(s => s.trim()).filter(Boolean));
     else if (tok.startsWith('agent=')) out.agent = tok.slice(6).trim().toLowerCase();
+    else if (tok.startsWith('control=')) out.control = tok.slice(8);
+    else if (tok.startsWith('target=')) out.target = Number(tok.slice(7));
   }
   return out;
 }
@@ -171,6 +173,10 @@ function parseOutbox(src) {
   if (agent && agent[1]) job.agent = agent[1].toLowerCase();
   const allow = b.match(/\["allow"\]\s*=\s*"([0-9a-fA-F]*)"/);
   if (allow && allow[1]) job.allow = fromHex(allow[1]).split('\x1F').filter(Boolean);
+  const control = b.match(/\["control"\]\s*=\s*"(ui|steer|followup|abort|new)"/);
+  if (control) job.control = control[1];
+  const target = b.match(/\["target"\]\s*=\s*(\d+)/);
+  if (target) job.target = Number(target[1]);
   return job;
 }
 
@@ -303,6 +309,17 @@ function luaStr(s) {
 // The slot file / Inbox.lua body: the latest record of every chat, the bridge's
 // clock, default folder and default agent (plus the agents it knows), and
 // (right after a saved-data reset) a restore bundle.
+// Only bridge-authored dialog DTOs enter this serializer; string values always
+// use luaStr, never executable Lua assembled from agent content.
+function luaDialog(value) {
+  if (typeof value === 'string') return luaStr(value);
+  if (typeof value === 'boolean') return String(value);
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (Array.isArray(value)) return '{ ' + value.map(luaDialog).join(', ') + ' }';
+  if (value && typeof value === 'object') return '{ ' + Object.entries(value).filter(([, v]) => v !== undefined).map(([k, v]) => `[${luaStr(k)}] = ${luaDialog(v)}`).join(', ') + ' }';
+  return 'nil';
+}
+
 function luaTable(globalName, records, opts = {}) {
   const now = opts.now || Date.now();
   const agents = Array.isArray(opts.agents) ? opts.agents : [];
@@ -314,6 +331,7 @@ function luaTable(globalName, records, opts = {}) {
     `\tcwd = ${luaStr(opts.cwd || '')},`,
     `\tagent = ${luaStr(opts.agent || '')},`,
     `\tagents = { ${agents.map(luaStr).join(', ')} },`,
+    `\tacks = { ${(opts.acks || []).filter(Number.isSafeInteger).join(', ')} },`,
     '\treplies = {',
   ];
   for (const r of records) {
@@ -325,6 +343,8 @@ function luaTable(globalName, records, opts = {}) {
     lines.push(`\t\t\tcwd = ${luaStr(r.cwd || '')},`);
     lines.push(`\t\t\tsession = ${luaStr(r.session || '')},`);
     lines.push(`\t\t\tagent = ${luaStr(r.agent || '')},`);
+    if (r.interactive) lines.push('\t\t\tinteractive = true,');
+    if (r.ui) lines.push(`\t\t\tui = ${luaDialog(r.ui)},`);
     if (r.summary) lines.push(`\t\t\tsummary = ${luaStr(r.summary)},`);
     if (Array.isArray(r.denied) && r.denied.length) {
       lines.push(`\t\t\tdenied = { ${r.denied.map(luaStr).join(', ')} },`);

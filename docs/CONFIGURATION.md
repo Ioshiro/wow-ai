@@ -33,7 +33,7 @@ Keys under `agents.claude`, `agents.codex`, `agents.grok`, `agents.agy` and `age
 | `networkAccess` (codex only) | `false` | `true` lets commands inside Codex's `workspace-write` sandbox reach the network (`-c sandbox_workspace_write.network_access=true`). |
 | `profile` (omp only) | `""` | Named omp profile for credentials, settings and sessions. Empty uses normal CLI resolution. |
 
-`agents.omp` accepts `path`, `model`, `profile`, `permissionMode`, and `extraArgs`. It runs the standalone or Tern-bundled omp CLI, not the Tern UI. `default` maps to `always-ask`, `acceptEdits` to `write`, and `bypassPermissions` to `yolo`. These are approval tiers, not containment; writes are not restricted to the working directory. Headless approval requests fail closed. Claude-style allow/deny rules are not translated; configure policies in omp. `--wait-async` retains background work until finished or the bridge timeout expires.
+`agents.omp` accepts `path`, `model`, `profile`, `permissionMode`, and `extraArgs`. It launches a dedicated persistent `rpc-ui` process per chat. `default` maps to `always-ask`, `acceptEdits` to `write`, and `bypassPermissions` to `yolo`. Native approval dialogs are forwarded to the addon. These tiers do not contain filesystem/network access. Claude allow/deny rules are not translated; use omp policies. Dialogs need an explicit response; timeout/abort cancellations are forwarded. Secret inputs and login remain outside WoW. Background work is tracked until session settlement. `timeoutMs` bounds the entire active job, including time spent awaiting input.
 
 A `config.json` from before agents existed kept Claude's settings at the top level (`claudePath`, `model`, `permissionMode`, `allowedTools`). The bridge still reads them, under anything in `agents.claude`; `setup.js` moves them down.
 
@@ -43,7 +43,7 @@ A `config.json` from before agents existed kept Claude's settings at the top lev
 |---|---|---|
 | `gameContext` | `true` | Put the character/zone context the addon sends into the agent's system prompt. `false` ignores it, for a bridge only ever used on unrelated projects. The addon has its own switch, `/wow-ai context off`, which also clears what the bridge holds. |
 | `primerFile` | `"docs/WOW-ADDON-PRIMER.md"` | A markdown file appended to the system prompt together with the game context, whatever folder the chat works in: how to write addons and macros for this client. Relative to the wow-ai folder, or absolute. Re-read on every run, so edits count at once. `""` sends none. Off whenever the context is off. |
-| `maxParallel` | `3` | How many chats may run an agent at the same time. Further messages queue per chat. |
+| `maxParallel` | `4` | Active chats that can work at once. Idle persistent omp processes do not count; input controls bypass the queue so waiting agents can be answered. Existing configs retain their value. |
 | `timeoutMs` | `1800000` (30 min) | A run longer than this is killed (with its children) and reported as an error in game. |
 | `progressWriteMs` | `3000` | Minimum gap between progress writes to the slot files. Final replies are written immediately. |
 | `pollMs` | `750` | How often the bridge checks the SavedVariables file for a reload-path message. |

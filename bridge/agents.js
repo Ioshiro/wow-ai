@@ -512,7 +512,7 @@ const AGENTS = {
     install: 'Install omp (standalone or bundled with Tern), then run `omp` once to configure a provider.',
     windowsPaths: () => [], posixPaths: () => [],
     args({ cfg, resume, cwd, system }) {
-      const a = ['-p', '--mode', 'json', '--cwd', cwd, '--no-title', '--no-pty', '--wait-async'];
+      const a = ['--mode', 'rpc-ui', '--cwd', cwd, '--no-title', '--no-pty'];
       const modes = { default: 'always-ask', acceptEdits: 'write', bypassPermissions: 'yolo' };
       a.push('--approval-mode', modes[cfg.permissionMode] || 'write');
       if (cfg.model) a.push('--model', cfg.model);

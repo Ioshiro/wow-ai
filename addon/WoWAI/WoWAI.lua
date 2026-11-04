@@ -43,6 +43,7 @@ local db
 local ui = {}
 -- Transport state for this UI session. outbound[id] = { chat, cwd, flags, text, sentAt, acked }
 local run = { outbound = {} }
+run.interactions = {} -- live only: never persist unanswered approval prompts
 
 -- Shared window backdrop. Declared up here because ShowCopy (rendering section)
 -- uses it too: a later `local` would be invisible there and resolve to a nil global.
@@ -377,7 +378,9 @@ local function RecordFor(id, rec)
 		fields[5] = flags == "" and "c" or (flags .. ";c")
 		table.insert(fields, Wire(rec.ctx))
 	end
-	table.insert(fields, Wire(rec.text))
+	-- UI replies deliberately contain unit separators between their fields.
+	local text = rec.control == "ui" and (tostring(rec.text or ""):gsub("[\30]", " ")) or Wire(rec.text)
+	table.insert(fields, text)
 	return table.concat(fields, US)
 end
 
@@ -708,6 +711,15 @@ local function ApplyReplies(replies)
 		if c and c.pendingId and r.id == c.pendingId then
 			matched = true
 			MarkAcked(r.id)
+			local live = run.interactions[c.id] or {}
+			live.interactive = r.interactive == true
+			local nextUI = type(r.ui) == "table" and r.ui or nil
+			if live.ui and (not nextUI or nextUI.id ~= live.ui.id) and WoWAI.CloseInteraction then
+				WoWAI.CloseInteraction(c.id)
+			end
+			if (live.ui and not nextUI) or (nextUI and (not live.ui or nextUI.id ~= live.ui.id)) then live.submitted = nil end
+			live.ui = nextUI
+			run.interactions[c.id] = live
 			local denied = type(r.denied) == "table" and #r.denied > 0 and r.denied or nil
 			if r.status == "done" then
 				Finish(c, "assistant", r.text or "", denied, r.agent, r.summary, WoWAI.CleanMacros(r.macros))
@@ -793,6 +805,9 @@ local function TryLoadSlot(why)
 	if type(data) == "table" then
 		if type(data.agent) == "string" and data.agent ~= "" then run.bridgeAgent = data.agent end
 		if type(data.agents) == "table" and #data.agents > 0 then run.bridgeAgents = data.agents end
+	end
+	if type(data) == "table" and type(data.acks) == "table" then
+		for _, id in ipairs(data.acks) do MarkAcked(id) end
 	end
 	local matched = ApplyReplies(type(data) == "table" and data.replies or nil)
 	if type(data) == "table" and data.restore then ImportRestore(data.restore) end
@@ -899,12 +914,15 @@ local function ProcessInbox()
 	if type(inbox.cwd) == "string" and inbox.cwd ~= "" then run.bridgeCwd = inbox.cwd end
 	if type(inbox.agent) == "string" and inbox.agent ~= "" then run.bridgeAgent = inbox.agent end
 	if type(inbox.agents) == "table" and #inbox.agents > 0 then run.bridgeAgents = inbox.agents end
+	if type(inbox.acks) == "table" then for _, id in ipairs(inbox.acks) do MarkAcked(id) end end
 	ApplyReplies(inbox.replies)
 	if inbox.restore then ImportRestore(inbox.restore) end
 	if inbox.map and WoWAIMap then WoWAIMap.Sync(inbox.map) end
 end
 
 Finish = function(chat, role, text, denied, agent, summary, macros)
+	if WoWAI.CloseInteraction then WoWAI.CloseInteraction(chat.id) end
+	run.interactions[chat.id] = nil
 	AddHistory(chat, role, text, chat.pendingId, denied, agent, macros)
 	chat.pendingId = nil
 	chat.progress = nil
@@ -1188,12 +1206,45 @@ end
 -- Sending
 ---------------------------------------------------------------------------
 
+-- Controls are independent records; the original job remains pending until terminal.
+function WoWAI.SendControl(c, control, text)
+	if not c or not c.pendingId then return false end
+	text = tostring(text or "")
+	if #text > Codec.MAX_PAYLOAD - 300 then
+		AddHistory(c, "system", "Control message is too long; shorten it and try again.")
+		WoWAI.Render()
+		return false
+	end
+	db.lastSeq = db.lastSeq + 1
+	local id, target = db.lastSeq, c.pendingId
+	local flags = "control=" .. control .. ";target=" .. target
+	if c.agent and c.agent ~= "" then flags = flags .. ";agent=" .. c.agent end
+	db.outbox = { id = id, session = db.session, chat = c.id, text = ToHex(text), cwd = ToHex(c.cwd),
+		agent = (c.agent and c.agent ~= "") and c.agent or nil, control = control, target = target, t = time() }
+	if db.settings.mode == "pixel" then
+		run.outbound[id] = { chat = c.id, cwd = c.cwd, flags = flags, name = c.name, text = text,
+			control = control, sentAt = GetTime() }
+		run.sentAt = GetTime(); run.polls = 0; ScheduleNextPoll()
+		RefreshStrip()
+	else
+		SafeReload()
+	end
+	return true
+end
+
 -- allow: optional list of permission rules to grant before this message runs.
 function WoWAI.Send(text, allow)
 	local c = ActiveChat()
 	if not c then return end
 	text = Trim(text or "")
 	if c.pendingId then
+		if ChatAgent(c) == "omp" or (run.interactions[c.id] and run.interactions[c.id].interactive) then
+			if text ~= "" and WoWAI.SendControl(c, "steer", Wire(text)) then
+				AddHistory(c, "user", text)
+				WoWAI.Render()
+			end
+			return
+		end
 		-- Typing while waiting: keep the draft, and check for the reply.
 		if text ~= "" then c.draft = text end
 		if db.settings.mode == "pixel" and not (run.slotsExhausted or run.slotsMissing) then
@@ -1375,6 +1426,7 @@ function WoWAI.SwitchChat(id)
 	local c = FindChat(id)
 	if not c then return end
 	local prev = ActiveChat()
+	if prev and prev ~= c then WoWAI.CloseInteraction(prev.id) end
 	if prev and prev ~= c and ui.input then
 		local typed = Trim(ui.input:GetText() or "")
 		prev.draft = typed ~= "" and typed or nil
@@ -1585,6 +1637,8 @@ function WoWAI.DeleteChat(id)
 	if id then c, idx = FindChat(id) end
 	if not c then c, idx = ActiveChat() end
 	if not c then return end
+	WoWAI.CloseInteraction(c.id)
+	run.interactions[c.id] = nil
 	ForgetOnBridge(c)
 	if #db.chats == 1 then
 		wipe(c.history)
@@ -1777,6 +1831,9 @@ function WoWAI.UpdateStatus()
 	local mode = db.settings.mode
 	local s
 	if c and c.pendingId then
+		if run.interactions[c.id] and run.interactions[c.id].ui then
+			s = "Input needed - click Respond to view the request"
+		else
 		local id = c.pendingId
 		local elapsed = run.sentAt and (GetTime() - run.sentAt) or 0
 		local rec = run.outbound[id]
@@ -1804,6 +1861,7 @@ function WoWAI.UpdateStatus()
 			if db.settings.autoRefresh then
 				s = s .. "; auto on next keypress after " .. db.settings.interval .. "s"
 			end
+		end
 		end
 	elseif not WoWAI.IsConnected() then
 		if run.connectingAt and run.sendOnConnect then
@@ -1854,6 +1912,7 @@ function WoWAI.UpdateStatus()
 	ui.cwd:SetText("cwd: " .. cwdText .. "   agent: " .. agentText .. "   mode: " .. mode)
 	if ui.resend then ui.resend:SetShown(c and c.pendingId ~= nil and mode == "pixel") end
 	if ui.refresh then ui.refresh:SetShown(mode ~= "pixel" or run.slotsExhausted or run.slotsMissing or run.pixelFailed or false) end
+	if ui.respond then ui.respond:SetShown(c and run.interactions[c.id] and run.interactions[c.id].ui ~= nil or false) end
 	WoWAI.UpdateMini()
 end
 
@@ -2060,7 +2119,9 @@ function WoWAI.RenderChatList()
 			if c.agent and c.agent ~= "" then
 				label = label .. " |cff888888" .. AgentName(c.agent) .. "|r"
 			end
-			if c.pendingId then
+			if run.interactions[c.id] and run.interactions[c.id].ui then
+				label = label .. " |cffffd100[Input]|r"
+			elseif c.pendingId then
 				label = label .. " |cffffd100...|r"
 			elseif (c.unread or 0) > 0 then
 				label = label .. " |cff55ff55(" .. c.unread .. ")|r"
@@ -2308,6 +2369,129 @@ local function MakeButton(parent, label, width, onClick)
 	b:SetScript("OnClick", onClick)
 	return b
 end
+function WoWAI.CloseInteraction(chatId)
+	if ui.interaction and (not chatId or ui.interaction.chatId == chatId) then ui.interaction:Hide() end
+end
+
+function WoWAI.ShowInteraction()
+	local c = ActiveChat()
+	local live = c and run.interactions[c.id]
+	local request = live and live.ui
+	if not request or live.submitted == request.id then return end
+	if not ui.interaction then
+		local f = CreateFrame("Frame", "WoWAIInteraction", UIParent, "BackdropTemplate")
+		f:SetSize(560, 430); f:SetPoint("CENTER"); f:SetFrameStrata("FULLSCREEN_DIALOG")
+		f:SetMovable(true); f:SetClampedToScreen(true); f:EnableMouse(true); f:RegisterForDrag("LeftButton")
+		f:SetScript("OnDragStart", f.StartMoving); f:SetScript("OnDragStop", f.StopMovingOrSizing)
+		f:SetBackdrop(BACKDROP); f:SetBackdropColor(0.05, 0.05, 0.07, 0.97); f:SetBackdropBorderColor(0.6, 0.6, 0.6, 1)
+		tinsert(UISpecialFrames, "WoWAIInteraction")
+		f.title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+		f.title:SetPoint("TOPLEFT", f, "TOPLEFT", 14, -14); f.title:SetPoint("RIGHT", f, "RIGHT", -36, 0); f.title:SetJustifyH("LEFT")
+		local close = CreateFrame("Button", nil, f, "UIPanelCloseButton"); close:SetPoint("TOPRIGHT", f, "TOPRIGHT", -4, -4)
+		close:SetScript("OnClick", function() f:Hide() end)
+		local scroll = CreateFrame("ScrollFrame", "WoWAIInteractionScroll", f, "UIPanelScrollFrameTemplate")
+		scroll:SetPoint("TOPLEFT", f, "TOPLEFT", 14, -42); scroll:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -32, 50)
+		f.body = CreateFrame("Frame", nil, scroll); f.body:SetSize(500, 1); scroll:SetScrollChild(f.body); f.rows = {}
+		local cancel = MakeButton(f, "Cancel request", 120, function() WoWAI.SubmitInteraction("cancel") end)
+		cancel:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 14, 14)
+		local submit = MakeButton(f, "Submit", 100, function() WoWAI.SubmitInteraction() end)
+		submit:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -14, 14)
+		f:Hide(); ui.interaction = f
+	end
+	local f = ui.interaction
+	if f.chatId ~= c.id or f.token ~= request.id then f.state = {}; f.chatId = c.id; f.token = request.id end
+	f.title:SetText(Display(request.title or "Input requested"))
+	for _, item in ipairs(f.rows) do item:Hide() end
+	local index, y = 0, 0
+	local function row(kind, height)
+		index = index + 1
+		local item = f.rows[index]
+		if not item or item.kind ~= kind then
+			if item then item:Hide() end
+			item = CreateFrame(kind, nil, f.body, kind == "Button" and "UIPanelButtonTemplate" or nil)
+			item.kind = kind; f.rows[index] = item
+		end
+		item:ClearAllPoints(); item:SetPoint("TOPLEFT", f.body, "TOPLEFT", 0, -y); item:SetSize(490, height); item:Show(); y = y + height + 6
+		return item
+	end
+	local function label(text)
+		local item = row("Frame", 1)
+		if not item.label then item.label = item:CreateFontString(nil, "OVERLAY", "GameFontHighlight"); item.label:SetPoint("TOPLEFT"); item.label:SetWidth(485); item.label:SetJustifyH("LEFT") end
+		item.label:SetText(Display(text)); local h = math.max(18, item.label:GetStringHeight() + 4); item:SetHeight(h); y = y + h - 1
+	end
+	local function input(key, value, multiline)
+		local e = row("EditBox", multiline and 100 or 28)
+		if not e.bg then e.bg = e:CreateTexture(nil, "BACKGROUND"); e.bg:SetAllPoints(); e.bg:SetColorTexture(0, 0, 0, 0.55) end
+		e:SetFontObject(ChatFontNormal); e:SetAutoFocus(false); e:SetMultiLine(multiline and true or false); e:SetMaxLetters(0)
+		e:SetText(f.state[key] or tostring(value or "")); e:SetScript("OnTextChanged", function(self) f.state[key] = self:GetText() end)
+		e:SetScript("OnEscapePressed", function() f:Hide() end)
+	end
+	local function options(list, key, multi)
+		for i, opt in ipairs(list or {}) do
+			local n, option = i, opt
+			local b = row("Button", 32)
+			local selected = f.state[key] and f.state[key][n]
+			b:SetText((selected and "[x] " or "[ ] ") .. Display(option.label or ""))
+			local font = b:GetFontString()
+			if font and font.SetWordWrap then
+				font:SetWordWrap(true); font:SetWidth(470)
+				local height = math.max(32, font:GetStringHeight() + 12)
+				b:SetHeight(height); y = y + height - 32
+			end
+			b:SetScript("OnClick", function()
+				f.state[key] = f.state[key] or {}
+				local was = f.state[key][n]
+				if not multi then for k in pairs(f.state[key]) do f.state[key][k] = nil end end
+				f.state[key][n] = not was
+				WoWAI.ShowInteraction()
+			end)
+			if option.description and option.description ~= "" then label(option.description) end
+		end
+	end
+	if request.message and request.message ~= "" then label(request.message) end
+	if request.method == "select" then options(request.options, "choice", false)
+	elseif request.method == "confirm" then options({ { label = "Yes" }, { label = "No" } }, "choice", false)
+	elseif request.method == "input" or request.method == "editor" then input("value", request.value, request.method == "editor")
+	elseif request.method == "ask" then
+		for i, q in ipairs(request.questions or {}) do
+			label((q.header and q.header ~= "" and (q.header .. ": ") or "") .. tostring(q.question or ""))
+			options(q.options, "q" .. i, q.multi)
+			label("Custom answer (optional)"); input("custom" .. i, "", false)
+		end
+	else label("Unsupported request type. Cancel the request or wait for the agent.") end
+	f.body:SetHeight(math.max(1, y)); f:Show()
+end
+
+function WoWAI.SubmitInteraction(action)
+	local f, c = ui.interaction, ActiveChat()
+	local live = c and run.interactions[c.id]
+	local r = live and live.ui
+	if not f or not r or f.chatId ~= c.id or f.token ~= r.id or live.submitted == r.id then return end
+	local fields = { Wire(r.id), action or r.method }
+	if not action then
+		if r.method == "select" or r.method == "confirm" then
+			local chosen
+			for i in pairs(f.state.choice or {}) do if f.state.choice[i] then chosen = i; break end end
+			if not chosen then return end
+			table.insert(fields, r.method == "confirm" and (chosen == 1 and "true" or "false") or tostring(chosen))
+		elseif r.method == "input" or r.method == "editor" then
+			fields[2] = "input"; table.insert(fields, Wire(f.state.value or r.value or ""))
+		elseif r.method == "ask" then
+			for i, q in ipairs(r.questions or {}) do
+				local selected = {}
+				for n = 1, #(q.options or {}) do if f.state["q" .. i] and f.state["q" .. i][n] then table.insert(selected, tostring(n)) end end
+				local custom = Wire(f.state["custom" .. i] or "")
+				if not q.multi and #selected > 0 and custom ~= "" then
+					AddHistory(c, "system", "Choose an option or enter a custom answer, not both.")
+					return
+				end
+				if not q.multi and #selected == 0 and custom == "" then return end
+				table.insert(fields, table.concat(selected, ",") .. ":" .. ToHex(custom))
+			end
+		else return end
+	else table.insert(fields, "") end
+	if WoWAI.SendControl(c, "ui", table.concat(fields, US)) then live.submitted = r.id; f:Hide(); WoWAI.Render() end
+end
 
 local PANEL_W = 150
 
@@ -2373,6 +2557,9 @@ local function BuildUI()
 	status:SetPoint("RIGHT", f, "RIGHT", -60, 0)
 	status:SetJustifyH("LEFT")
 	ui.status = status
+	local respond = MakeButton(f, "Respond", 80, function() WoWAI.ShowInteraction() end)
+	respond:SetPoint("TOPRIGHT", f, "TOPRIGHT", -48, -52)
+	respond:Hide(); ui.respond = respond
 
 	-- Minimize button in the corner where a close X would be: this window is never
 	-- closed from here, only collapsed to the mini bar (Esc does the same, see OnHide).
@@ -2775,6 +2962,7 @@ function WoWAI.Toggle(show)
 		if c then c.unread = 0 end
 	end
 	if ui.mini then ui.mini:Hide() end
+	if not show then WoWAI.CloseInteraction() end
 	if not show then ui.quitting = true end
 	ui.frame:SetShown(show)
 	ui.quitting = nil
@@ -2828,6 +3016,10 @@ local HELP = table.concat({
 	"/wow-ai resend                 show the strip again if the bridge missed it",
 	"/wow-ai reload                 reload now (also frees the slot pool)",
 	"/wow-ai cancel                 stop waiting on this chat's reply",
+	"/wow-ai respond                view the current input request",
+	"/wow-ai followup <text>        queue a follow-up while omp is working (ordinary messages steer)",
+	"/wow-ai review                 open omp's review menu when idle",
+	"/wow-ai session-new            start a fresh omp session in this chat when idle",
 	"/wow-ai copy                   open the last reply in a selectable box for Ctrl+C",
 	"/wow-ai macro undo             undo the last macro the agent's button created or changed",
 	"/wow-ai bind <key>             hotkey: checks for a reply while waiting, else toggles the window",
@@ -2857,6 +3049,7 @@ end
 local COMMAND_ARGS = {
 	mini = 0, min = 0, hide = 0, quit = 0, help = 0, clear = 0, delete = 0, reset = 0, copy = 0,
 	cancel = 0, resend = 0, reload = 0, refresh = 0, slots = 0, diag = 0,
+	respond = 0, review = 0, ["session-new"] = 0, followup = true,
 	context = { [""] = true, on = true, off = true }, ctx = { [""] = true, on = true, off = true },
 	mode = { [""] = true, pixel = true, reload = true },
 	signal = { [""] = true, on = true, off = true }, longchat = { [""] = true, on = true, off = true },
@@ -2907,6 +3100,15 @@ SlashCmdList["WOWAI"] = function(msg)
 		WoWAI.Toggle()
 	elseif cmd == "mini" or cmd == "min" then
 		WoWAI.Minimize(true)
+	elseif cmd == "respond" then
+		WoWAI.ShowInteraction()
+	elseif cmd == "review" or cmd == "session-new" then
+		if not c.pendingId then WoWAI.Send(cmd == "review" and "/review" or "/new")
+		else AddHistory(c, "system", "Wait for the current job before starting this command."); WoWAI.Render() end
+	elseif cmd == "followup" then
+		if c.pendingId and (ChatAgent(c) == "omp" or (run.interactions[c.id] and run.interactions[c.id].interactive)) and rest ~= "" then
+			if WoWAI.SendControl(c, "followup", Wire(rest)) then AddHistory(c, "user", "Follow-up: " .. rest); WoWAI.Render() end
+		else AddHistory(c, "system", "Follow-up requires a working omp chat and some text."); WoWAI.Render() end
 	elseif cmd == "new" then
 		WoWAI.NewChat(rest)
 	elseif cmd == "chat" or cmd == "chats" then
@@ -3063,6 +3265,11 @@ SlashCmdList["WOWAI"] = function(msg)
 		WoWAI.Toggle(true)
 	elseif cmd == "cancel" then
 		if c.pendingId then
+			if ChatAgent(c) == "omp" or (run.interactions[c.id] and run.interactions[c.id].interactive) then
+				if WoWAI.SendControl(c, "abort", "") then AddHistory(c, "system", "Abort requested for #" .. c.pendingId .. "; waiting for the bridge.") end
+				WoWAI.Render()
+				return
+			end
 			AddHistory(c, "system", "Gave up waiting on #" .. c.pendingId)
 			run.outbound[c.pendingId] = nil
 			if run.act then run.act[c.id] = nil end
@@ -3104,7 +3311,7 @@ ev:SetScript("OnEvent", function(self, event, arg1)
 	elseif event == "PLAYER_LOGIN" then
 		if not db then InitDB() end
 		BuildUI()
-		run = { outbound = {} }
+		run = { outbound = {}, interactions = {} }
 		SelfTestSignals()
 		ProcessInbox()
 		if AnyPending() then

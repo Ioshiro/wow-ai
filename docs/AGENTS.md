@@ -3,11 +3,13 @@
 ## omp / Tern
 
 - **Executable:** `omp` on PATH, or `agents.omp.path` pointing to the standalone/Tern-bundled executable. Run `omp` once to configure a provider. `tern.exe` is a UI launcher, not this protocol endpoint.
-- **Command:** `omp -p --mode json --cwd <folder> --no-title --no-pty --wait-async --approval-mode <tier> [--profile <profile>] [--model <model>] [--resume <session>] [--append-system-prompt <context>]`; prompt on stdin.
-- **Session:** the JSON `session` header's `id` is saved for `--resume`. Every WoW chat owns its session; no existing Tern conversation is attached.
-- **Output:** tool execution events become progress; completed assistant messages supply text; `agent_end` selects the latest reply. User messages, thinking and incremental snapshots are not echoed. Error/aborted stop reasons are errors.
-- **Permissions:** `default` → `always-ask`, `acceptEdits` → `write`, `bypassPermissions` → `yolo`. Calls needing approval fail closed headlessly. These tiers do not sandbox filesystem/network access. Use omp policies, not Claude-style allow/deny rules. No in-game Allow & retry for omp.
-- **Tern scope:** its bundled CLI and profiles are supported; UI windows, artifacts and interactive dialogs are not mirrored.
+- **Command:** `omp --mode rpc-ui --cwd <folder> --no-title --no-pty --approval-mode <tier> [--profile <profile>] [--model <model>] [--resume <session>] [--append-system-prompt <context>]`. The process stays alive, one per dedicated chat, with JSONL commands on stdin. Protocol v2 negotiates lossless chunked output.
+- **Session:** `get_state.sessionId` is saved for restart. `/wow-ai session-new` invokes RPC `new_session`; `/wow-ai review` dispatches the actual bundled `/review` command and presents its menu. A profile that disables the review command must re-enable it in omp.
+- **Output:** tool execution events supply progress, assistant messages supply replies, and `prompt_result` plus session settlement determine completion. User messages and thinking are not echoed. Background work is allowed to finish before the job becomes done.
+- **Interaction:** native select, confirm, input/editor and ask dialogs are shown through **Respond**. Ask supports multiple questions, multi-select and custom text. Replies are bound to an opaque dialog token and the original pending job; stale/duplicate answers cannot approve another request. Close/Esc never submits. Secret inputs are cancelled, not exposed through the game transport.
+- **Permissions:** `default` → `always-ask`, `acceptEdits` → `write`, `bypassPermissions` → `yolo`. Native approval requests are forwarded to WoW; Claude allow/deny rules are not translated. Approval tiers are not filesystem/network containment. Restricted/provider safety policies still apply.
+- **Controls:** ordinary busy-chat text sends `steer`; `/wow-ai followup <text>` sends `follow_up`; `/wow-ai cancel` sends `abort`. Controls bypass the turn/concurrency queues and keep the original job pending until a terminal result. Default parallelism is four active chats; idle processes do not occupy active slots.
+- **Tern scope:** bundled CLI and profiles only; no attachment to existing Tern conversations, Collab or Tern serve. Rich artifacts, login flows and graphical overlays are outside the addon.
 
 
 The bridge drives Claude Code, OpenAI Codex, Grok Build, Antigravity, Hermes and omp. Each section describes its executable, headless protocol and permission limits. `bridge/agents.js` implements the shared adapter contract.

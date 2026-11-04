@@ -30,6 +30,7 @@ const readline = require('readline');
 const { spawn } = require('child_process');
 const P = require('./protocol'); // the pure protocol code, unit-tested in tests/bridge_test.js
 const A = require('./agents');   // how each agent is launched and read, unit-tested in tests/agents_test.js
+const { OmpSessions } = require('./omp-sessions');
 
 const HERE = __dirname;
 const CONFIG_FILE = path.join(HERE, 'config.json');
@@ -93,7 +94,7 @@ function siblingFolders() {
 }
 
 const SLOTS = cfg.slots || 200;
-const MAX_PARALLEL = cfg.maxParallel || 3;
+const MAX_PARALLEL = cfg.maxParallel || 4;
 const cap = Object.assign({ enabled: true, processName: 'Wow', cellPx: 4, cellsPerRow: 200, maxRows: 48, intervalMs: 250 }, cfg.capture || {});
 // The game-side files. A config.json written for the addon's old name
 // (WoWClaude) still works: the paths are derived from addonDir instead.
@@ -196,6 +197,25 @@ const queued = new Map();  // chatKey -> job waiting for that chat (or for a fre
 const live = new Map();    // chatKey -> latest record shown to the game
 let lastPublish = 0;
 let publishTimer = null;
+let currentAddonSession = '';
+const controlAcks = [];
+const ompSessions = new OmpSessions({
+  publish(job, detail) {
+    beat(job);
+    publish(chatKey(job), { chat: job.chat, id: job.id, status: 'working', cwd: job.cwd, agent: 'omp', interactive: true, ...detail }, true);
+  },
+  complete: (job, status, text, session) => finish(job, status, text, session),
+  saveSession(job, session) {
+    if (!job) return;
+    const key = sessKey(job);
+    state.sessions[key] = session;
+    (state.sessionCwd ||= {})[key] = job.cwd;
+    (state.sessionAgent ||= {})[key] = 'omp';
+    saveState();
+  },
+  log,
+});
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { ompSessions.close(); for (const { child } of running.values()) if (child) killTree(child); process.exit(0); });
 
 // ---------------------------------------------------------------------------
 // Small utilities
@@ -262,7 +282,7 @@ function mapLuaSize() {
 }
 
 function mapFileFor(job) {
-  return path.join(MAP_DIR, `${String(job.chat || 'default').replace(/[^\w-]/g, '_')}-${job.id}.jsonl`);
+  return path.join(MAP_DIR, `${String(job.chat || 'default').replace(/[^\w-]/g, '_')}-${job.agent === 'omp' ? 'omp' : job.id}.jsonl`);
 }
 
 // Collect what the run asked for (its map file, then ```wowmap blocks in its
@@ -290,7 +310,7 @@ function takeMapCommands(job, text) {
 // Slot file / Inbox.lua body: see protocol.luaTable.
 function slotFile(globalName, records, urgent = true) {
   const map = Date.now() < mapShareUntil && (urgent || mapLuaSize() <= MAP_PROGRESS_MAX) ? state.map : null;
-  return P.luaTable(globalName, records, { cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), map });
+  return P.luaTable(globalName, records, { cwd: DEFAULT_CWD, restore: pendingRestore, agent: DEFAULT_AGENT, agents: A.agentIds(), map, acks: controlAcks.filter(a => a.session === currentAddonSession).map(a => a.id) });
 }
 
 function addonInstalled() {
@@ -449,10 +469,28 @@ function allowRules(agentId, rules) {
 
 function submit(job) {
   if (alreadyHandled(job)) return;
+  currentAddonSession = job.session || '';
+  if (job.control) {
+    // Controls must bypass concurrency/turn queues: the turn may be blocked on
+    // this exact answer. Mark before awaiting so pixel retransmits cannot replay.
+    markHandled(job);
+    saveState();
+    signal('ack', job.id, true);
+    controlAcks.push({ session: currentAddonSession, id: job.id });
+    if (controlAcks.length > 128) controlAcks.shift();
+    publishNow();
+    ompSessions.control(chatKey(job), job).catch(error => log(`control #${job.id}: ${error.message}`));
+    return;
+  }
   if (job.ctx !== undefined) setContext(job);
   if (job.forget) {
     // A deleted chat: forget it and ack. No agent run.
     markHandled(job);
+    const active = running.get(chatKey(job));
+    ompSessions.drop(chatKey(job));
+    if (active?.child) killTree(active.child);
+    running.delete(chatKey(job));
+    queued.delete(chatKey(job));
     forgetChat(job);
     saveState();
     signal('ack', job.id, true);
@@ -519,6 +557,7 @@ function runJob(job) {
     return;
   }
   job.agent = agentId;
+  if (agentId !== 'omp') ompSessions.drop(key);
   const agent = A.AGENTS[agentId];
   const acfg = A.agentConfig(cfg, agentId);
   const cmd = A.resolveCommand(agentId, acfg);
@@ -569,6 +608,12 @@ function runJob(job) {
     fs.rmSync(mapFileFor(job), { force: true });
     env.WOW_AI_MAP_FILE = mapFileFor(job);
   } catch (e) { log(`${tag} map file unavailable: ${e.message}`); }
+  if (agentId === 'omp') {
+    running.set(key, { job });
+    const identity = JSON.stringify([cmd.file, acfg, cwd, system]);
+    ompSessions.run(key, job, { file: cmd.file, args, cwd, env, resume, identity, timeoutMs: cfg.timeoutMs });
+    return;
+  }
 
   log(`${tag} (${job.via}) ${agent.name} starting in ${cwd}${resume ? ' (resume ' + resume.slice(0, 8) + ')' : ' (new session)'}${ctx ? ' [game context]' : ''}${running.size ? ' [' + (running.size + 1) + ' running]' : ''}`);
   const child = spawn(cmd.file, args, { cwd, env, windowsHide: true, stdio: [input.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
@@ -695,6 +740,10 @@ function finish(job, status, text, session, denied) {
   running.delete(chatKey(job));
   markHandled(job);
   saveState();
+  if (job.agent === 'omp') {
+    const mapped = takeMapCommands(job, text);
+    text = mapped.text + (mapped.note ? '\n[bridge] ' + mapped.note : '');
+  }
   // A finished reply ends with the "TL;DR:" block the system prompt asks for:
   // that part is what the game chat prints; the window gets the whole reply.
   let summary = '';
@@ -709,11 +758,11 @@ function finish(job, status, text, session, denied) {
     summary = P.stripMacroBlocks(summary);
   }
   noteMessage(job, status === 'done' ? 'assistant' : 'system', status === 'done' ? text : 'Bridge error: ' + text);
-  publish(chatKey(job), { chat: job.chat, id: job.id, status, text, summary, cwd: job.cwd, session, denied, macros, agent: job.agent || '' }, true);
+  publish(chatKey(job), { chat: job.chat, id: job.id, status, text, summary, cwd: job.cwd, session, denied, macros, agent: job.agent || '', interactive: job.agent === 'omp' }, true);
   signal('sig', job.id, true);
   log(`#${job.id}${job.session ? '@' + job.session : ''} ${status} (${text.length} chars${summary ? ', summary ' + summary.length : ', no summary'})`);
   drainQueue();
-  if (exitWhenIdle && running.size === 0) process.exit(status === 'done' ? 0 : 1);
+  if (exitWhenIdle && running.size === 0) { ompSessions.close(); process.exit(status === 'done' ? 0 : 1); }
 }
 
 // ---------------------------------------------------------------------------

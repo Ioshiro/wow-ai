@@ -8,7 +8,7 @@
   "actMax": 60,
   "presenceMax": 2000,
   "presenceIntervalMs": 30000,
-  "maxParallel": 3,
+  "maxParallel": 4,
   "capture": {
     "enabled": true,
     "processName": "Wow",
