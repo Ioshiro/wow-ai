@@ -51,6 +51,34 @@ While omp works, ordinary messages steer it; `/wow-ai followup <text>` queues a 
 
 The bridge waits for session settlement, including background work, rather than treating an intermediate answer as finished. Restarting the bridge resumes saved session IDs on the next message; pending dialogs cannot be restored across a killed process. `default` allows read-tier tools, `acceptEdits` read/write tiers, and execution approval is requested in game. These tiers do not sandbox filesystem/network access. No yolo is needed for interactive approval support. Login, rich artifacts and graphical overlays remain desktop-only.
 
+### Attach to an existing omp (Tern or another terminal)
+
+The optional `omp-live` backend does not spawn or resume an agent. It talks to `omp-extension/wow-ai.ts` loaded inside the existing process. Dedicated `omp` chats keep their full RPC UI behavior unchanged.
+
+Load the extension explicitly in a new desktop omp:
+
+```powershell
+omp -e "E:\Discarica\wow-ai\omp-extension\wow-ai.ts"
+```
+
+Use your checkout's absolute path. For automatic loading, install/link this extension using your normal omp extension setup, then restart only the sessions you choose; the bridge never installs it or restarts sessions itself. The default IPC directory is `bridge/live` relative to the extension's actual module location. If you copy the extension elsewhere, set `WOW_AI_LIVE_DIR` to the same absolute private directory in both the desktop omp and bridge environments. No network listener, Tern plugin or `tern serve` is needed.
+
+In WoW:
+
+```text
+/wow-ai agent omp-live
+/ai /sessions
+/ai /attach <instance-id-from-the-list>
+/ai Explain where you stopped and what you need from me.
+```
+
+Send `/ai /watch` to follow an already-running turn, or read its latest completed reply when idle. Ordinary text goes to that exact live omp; while following, text steers and `/wow-ai followup <text>` queues a follow-up. `/wow-ai cancel` aborts the shared agent, including its desktop turn. `/ai /detach` detaches an idle WoW chat without stopping omp. A desktop `/new` invalidates the binding: explicitly attach again, so an old message cannot land in the replacement conversation. Instance IDs change after process restart. Only one WoW chat may attach to one instance at a time.
+
+**Live mode limits:** completed assistant text and working/waiting state, not full transcript mirroring or token streaming. Slash commands, ask/interview, approvals, review menus and rich artifacts stay in Tern; the bridge does not emulate keys or overwrite the desktop composer. Follow mode ends after the observed turn finishes; send `/watch` again for later desktop turns. Missing/stale endpoints fail rather than launching a second agent. A command-ack timeout leaves delivery uncertain: check Tern before manually resending. The extension does not receive game context, map paths or the WoW reply-format system prompt.
+
+**Local security:** the endpoint's token and command/reply files live in a per-instance private directory. POSIX modes are restricted; Windows uses inherited ACLs. Keep the checkout/IPC directory accessible only to your account. Any process with access to those files can read shared replies and control opted-in agents; this is not isolation against other programs running as you. Runtime files are gitignored.
+
+
 ## Requirements
 
 - Windows (NTFS), or Linux with the game under Wine on an **X11** session and python3 (see [docs/INSTALL-LINUX.md](docs/INSTALL-LINUX.md)), or macOS with a native client and python3

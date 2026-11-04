@@ -17,7 +17,7 @@ The bridge reads `config.json` once at start. Restart it after editing, except f
 
 | Key | Default | Meaning |
 |---|---|---|
-| `agent` | `"claude"` | Default agent: `claude`, `codex`, `grok`, `agy`, `hermes`, or `omp`. Unknown names prevent startup. |
+| `agent` | `"claude"` | Default agent: `claude`, `codex`, `grok`, `agy`, `hermes`, `omp`, or `omp-live`. Unknown names prevent startup. `omp-live` attaches an extension endpoint instead of launching a CLI. |
 | `agents.<id>` | one block per agent | That agent's settings, below. A missing block means the defaults. |
 
 Keys under `agents.claude`, `agents.codex`, `agents.grok`, `agents.agy` and `agents.hermes` (what each one means per agent is spelled out in [AGENTS.md](AGENTS.md)):
@@ -101,6 +101,7 @@ Exit codes: `0` normal, `1` the injected or one-shot job failed, `2` config miss
 | `GROK_DISABLE_AUTOUPDATER` | Set to `1` for Grok runs, so a headless run never stops for an update. |
 | `GROK_HOME` | Honoured when looking for `grok.exe` (`<GROK_HOME>\bin`); Grok's own setting. |
 | `WOW_AI_MAP_FILE` | Set by the bridge for each run, whatever the agent: a file where the agent's tools append map commands, one JSON object per line (see [MAP.md](MAP.md)). |
+| `WOW_AI_LIVE_DIR` | Private shared IPC directory, identical in extension and bridge environments. Default: `bridge/live` in this checkout. Instance tokens live there; Windows privacy depends on inherited ACLs. |
 
 ## Which folder the agent works in
 

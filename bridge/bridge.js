@@ -31,6 +31,7 @@ const { spawn } = require('child_process');
 const P = require('./protocol'); // the pure protocol code, unit-tested in tests/bridge_test.js
 const A = require('./agents');   // how each agent is launched and read, unit-tested in tests/agents_test.js
 const { OmpSessions } = require('./omp-sessions');
+const { OmpLive } = require('./omp-live');
 
 const HERE = __dirname;
 const CONFIG_FILE = path.join(HERE, 'config.json');
@@ -215,7 +216,14 @@ const ompSessions = new OmpSessions({
   },
   log,
 });
-for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { ompSessions.close(); for (const { child } of running.values()) if (child) killTree(child); process.exit(0); });
+state.liveBindings ||= {};
+const liveSessions = new OmpLive({
+  directory: process.env.WOW_AI_LIVE_DIR || path.join(HERE, 'live'), bindings: state.liveBindings,
+  save: saveState, timeoutMs: cfg.timeoutMs,
+  publish(job, detail) { beat(job); publish(chatKey(job), { chat: job.chat, id: job.id, status: 'working', cwd: job.cwd, agent: 'omp-live', interactive: true, ...detail }, true); },
+  complete: (job, status, text, session) => finish(job, status, text, session),
+});
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { liveSessions.close(); ompSessions.close(); for (const { child } of running.values()) if (child) killTree(child); process.exit(0); });
 
 // ---------------------------------------------------------------------------
 // Small utilities
@@ -479,7 +487,9 @@ function submit(job) {
     controlAcks.push({ session: currentAddonSession, id: job.id });
     if (controlAcks.length > 128) controlAcks.shift();
     publishNow();
-    ompSessions.control(chatKey(job), job).catch(error => log(`control #${job.id}: ${error.message}`));
+    const active = running.get(chatKey(job));
+    const controller = active?.job.agent === 'omp-live' ? liveSessions : ompSessions;
+    controller.control(active?.job.agent === 'omp-live' ? sessKey(job) : chatKey(job), job).catch(error => log(`control #${job.id}: ${error.message}`));
     return;
   }
   if (job.ctx !== undefined) setContext(job);
@@ -488,6 +498,8 @@ function submit(job) {
     markHandled(job);
     const active = running.get(chatKey(job));
     ompSessions.drop(chatKey(job));
+    liveSessions.drop(sessKey(job));
+    delete state.liveBindings[sessKey(job)];
     if (active?.child) killTree(active.child);
     running.delete(chatKey(job));
     queued.delete(chatKey(job));
@@ -558,6 +570,12 @@ function runJob(job) {
   }
   job.agent = agentId;
   if (agentId !== 'omp') ompSessions.drop(key);
+  if (agentId === 'omp-live') {
+    running.set(key, { job });
+    noteMessage(job, 'user', job.text);
+    liveSessions.run(sessKey(job), job).catch(error => finish(job, 'error', error.message));
+    return;
+  }
   const agent = A.AGENTS[agentId];
   const acfg = A.agentConfig(cfg, agentId);
   const cmd = A.resolveCommand(agentId, acfg);
@@ -758,11 +776,11 @@ function finish(job, status, text, session, denied) {
     summary = P.stripMacroBlocks(summary);
   }
   noteMessage(job, status === 'done' ? 'assistant' : 'system', status === 'done' ? text : 'Bridge error: ' + text);
-  publish(chatKey(job), { chat: job.chat, id: job.id, status, text, summary, cwd: job.cwd, session, denied, macros, agent: job.agent || '', interactive: job.agent === 'omp' }, true);
+  publish(chatKey(job), { chat: job.chat, id: job.id, status, text, summary, cwd: job.cwd, session, denied, macros, agent: job.agent || '', interactive: ['omp', 'omp-live'].includes(job.agent) }, true);
   signal('sig', job.id, true);
   log(`#${job.id}${job.session ? '@' + job.session : ''} ${status} (${text.length} chars${summary ? ', summary ' + summary.length : ', no summary'})`);
   drainQueue();
-  if (exitWhenIdle && running.size === 0) { ompSessions.close(); process.exit(status === 'done' ? 0 : 1); }
+  if (exitWhenIdle && running.size === 0) { liveSessions.close(); ompSessions.close(); process.exit(status === 'done' ? 0 : 1); }
 }
 
 // ---------------------------------------------------------------------------

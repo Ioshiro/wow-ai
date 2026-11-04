@@ -5,6 +5,7 @@ bridge/transcripts.json
 bridge/bridge.log
 bridge/tmp/
 *.tmp
+bridge/live/
 
 # tooling
 node_modules/

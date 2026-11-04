@@ -524,6 +524,13 @@ const AGENTS = {
     input: ({ prompt }) => ({ stdin: prompt }),
     env: env => env, parser: ompParser,
   },
+  'omp-live': {
+    name: 'omp Live', command: 'omp',
+    install: 'Load omp-extension/wow-ai.ts in the existing omp process.',
+    windowsPaths: () => [], posixPaths: () => [],
+    args: () => [], input: () => ({}), env: env => env,
+    parser: ompParser,
+  },
 };
 
 const DEFAULT_AGENT = 'claude';

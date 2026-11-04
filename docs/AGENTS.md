@@ -11,6 +11,11 @@
 - **Controls:** ordinary busy-chat text sends `steer`; `/wow-ai followup <text>` sends `follow_up`; `/wow-ai cancel` sends `abort`. Controls bypass the turn/concurrency queues and keep the original job pending until a terminal result. Default parallelism is four active chats; idle processes do not occupy active slots.
 - **Tern scope:** bundled CLI and profiles only; no attachment to existing Tern conversations, Collab or Tern serve. Rich artifacts, login flows and graphical overlays are outside the addon.
 
+## Live attachment (`omp-live`)
+
+Load `omp-extension/wow-ai.ts` explicitly with `omp -e <absolute-path>` in the desktop process, then select `/wow-ai agent omp-live`. Send `/ai /sessions`, `/ai /attach <instance>`, ordinary text, `/ai /watch`, or `/ai /detach`. No process is spawned/resumed; the extension's existing process handles messages through `sendUserMessage`. Desktop composer contents are untouched. Busy messages steer; explicit follow-ups queue. Slash-command expansion and interactive dialogs remain desktop-only. A desktop session switch invalidates the binding until explicit reattachment. Detaching or bridge timeout does not kill the desktop process; cancelling an active watched job requests a real abort. The per-instance endpoint uses private local JSON files; see README for security and `WOW_AI_LIVE_DIR`. Loading the extension is opt-in, not part of setup.js.
+
+
 
 The bridge drives Claude Code, OpenAI Codex, Grok Build, Antigravity, Hermes and omp. Each section describes its executable, headless protocol and permission limits. `bridge/agents.js` implements the shared adapter contract.
 

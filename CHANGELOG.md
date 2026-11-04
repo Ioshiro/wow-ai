@@ -8,6 +8,8 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 - omp/Tern-bundled CLI adapter (`/wow-ai agent omp`): per-chat saved sessions, tool progress, completed assistant replies, optional profile/model, explicit headless approval tiers and background-work completion. Tern UI conversations/artifacts are not attached.
 - Dedicated omp sessions now use persistent `rpc-ui` with protocol v2. Native ask/interview, selection menus, confirmations and approval requests travel through the addon; stale dialog tokens are rejected and Esc never approves. Busy messages steer, `/wow-ai followup` queues a follow-up, and `/wow-ai cancel` aborts the real agent. `/wow-ai session-new` creates a new session in the project and `/wow-ai review` opens omp's real review menu. Default active parallelism is four. Existing Tern sessions/serve remain out of scope.
+- Optional `omp-live` attachment backend and opt-in `omp-extension/wow-ai.ts`: discover and bind existing omp processes, send text/steering/follow-ups, follow completed replies and abort without starting a second agent. Desktop session changes invalidate bindings; detach leaves omp running. Local private file IPC, no network listener or global installation. Dialogs and slash commands remain desktop-only in live mode.
+
 
 
 
