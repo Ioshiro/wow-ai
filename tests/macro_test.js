@@ -122,7 +122,7 @@ function newVM() {
   };
   run(fs.readFileSync(path.join(__dirname, 'wow_stub.lua'), 'utf8'));
   run(MACRO_STUB);
-  for (const f of ['Codec.lua', 'Inbox.lua', 'WoWAI.lua']) run(fs.readFileSync(path.join(ADDON, f), 'utf8'), 'WoWAI');
+  for (const f of require('./addon_files')(ADDON)) run(fs.readFileSync(path.join(ADDON, f), 'utf8'), 'WoWAI');
   run('STUB.FireEvent("ADDON_LOADED", "WoWAI"); STUB.FireEvent("PLAYER_LOGIN")');
   return { run, evaluate };
 }

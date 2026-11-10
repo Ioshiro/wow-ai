@@ -167,13 +167,13 @@ Every chat that hasn't picked its own folder now works in `realms`, and the pane
 
 ## Use
 
-In game: `/wow-ai` opens the window. Until the bridge has answered, a **Connect** button sits where Send would be: start the bridge, click it, and the light turns green (a message typed before that stays in the box). Then click the input box, type, Enter. The reply arrives with the whisper sound; the window's light shows the bridge state (green/yellow/red, hover for details), and **Reconnect** shows up if the bridge goes quiet.
+In game: `/wow-ai` opens the parchment detail. The compact quest-style tracker keeps chats visible while you play, grouped by project folder, with markers for input needed, working, unread replies and failures. Click a chat to read its latest response and reply; **History** opens the complete conversation. Minimize or Esc returns to the tracker without stopping the agent. Until the bridge answers, **Connect** replaces Send; **Reconnect** is available if it goes quiet. Start the bridge separately as before.
 
 Right-clicking a chat in the left panel opens a small menu with **Rename...**, **Folder...** and **Agent...** (right-click again to close it); the trash can on the row deletes the chat after an OK/Cancel confirm. **Folder...** sets the folder this chat's agent works in (same as `/wow-ai cd` below), **Agent...** which agent answers it (same as `/wow-ai agent`); each chat keeps its own, so you can have chats on different projects, with different agents, side by side.
 
 | Command | What it does |
 |---|---|
-| `/wow-ai` | toggle the window (`/ai`, `/wowai` and the old `/wow-claude` are the same command); the minimize button (top right) or Esc collapses it to a small bar, click the bar to expand |
+| `/wow-ai` | toggle the detail window (`/ai`, `/wowai` and the old `/wow-claude` are the same command); minimize or Esc returns to the compact tracker |
 | `/ai <text>` | send from the normal chat box (`/wow-ai <text>` is the same). `/ai` is a full alias, so `/ai agent grok` or `/ai cd realms` work too; a message that merely starts with a command word, like `/ai help me with this macro` or `/ai delete the unused imports`, is still sent as a message because the rest of the line doesn't fit that command |
 | `/r <text>` | replies to the agent when it was the last to message you; otherwise the normal whisper reply |
 | `/wow-ai new [name]` | new chat = new agent session. Unnamed chats take their title from your first message |
@@ -192,8 +192,9 @@ Right-clicking a chat in the left panel opens a small menu with **Rename...**, *
 | `/wow-ai mode reload` | fallback transport that costs a `/reload` per step, if pixels or slots can't work |
 | `/wow-ai diag`, `/wow-ai slots` | transport diagnostics |
 | `/wow-ai help` | the full list |
+| `/wow-ai config` | open presentation settings; backend and transport configuration stay unchanged |
 
-Click any message, or `/wow-ai copy` for the last reply, to open it in a selectable box for Ctrl+C.
+Click a message, or `/wow-ai copy` for the last reply, to open the original text in a selectable box for Ctrl+C. Completion, failure and input-needed pop-ups use native WoW-style alerts and wait until combat ends. Presentation code is adapted from [ompcraft](https://github.com/TechDufus/ompcraft); see [NOTICE.md](NOTICE.md).
 
 ### Short in the chat, full in the window
 

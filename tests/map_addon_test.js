@@ -65,7 +65,7 @@ function Methods.SetFrameLevel(self, l) self.level = l end
   stub = stub.replace('local function NewObject(', 'function NewObjectPublic(').replace(/NewObject\(/g, 'NewObjectPublic(');
   run(stub);
   run(MAP_STUB);
-  for (const f of ['Codec.lua', 'Inbox.lua', 'WoWAI.lua', 'Map.lua']) run(fs.readFileSync(path.join(ADDON, f), 'utf8'), 'WoWAI');
+  for (const f of require('./addon_files')(ADDON)) run(fs.readFileSync(path.join(ADDON, f), 'utf8'), 'WoWAI');
   run('STUB.FireEvent("ADDON_LOADED", "WoWAI"); STUB.FireEvent("PLAYER_LOGIN")');
   return { run, evaluate, num };
 }

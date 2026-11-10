@@ -8,5 +8,11 @@
 
 Codec.lua
 Inbox.lua
+Style.lua
+ViewModel.lua
+Markdown.lua
+Tracker.lua
+Toasts.lua
+Presentation.lua
 WoWAI.lua
 Map.lua

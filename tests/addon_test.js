@@ -34,7 +34,7 @@ function newVM() {
   };
   const num = (expr) => Number(evaluate(expr));
   run(fs.readFileSync(path.join(__dirname, 'wow_stub.lua'), 'utf8'));
-  for (const f of ['Codec.lua', 'Inbox.lua', 'WoWAI.lua']) run(fs.readFileSync(path.join(ADDON, f), 'utf8'), 'WoWAI');
+  for (const f of require('./addon_files')(ADDON)) run(fs.readFileSync(path.join(ADDON, f), 'utf8'), 'WoWAI');
   return { run, evaluate, num };
 }
 
@@ -685,7 +685,7 @@ test('chat rows: right-click opens a menu that renames or sets the folder of tha
   assert.equal(vm.evaluate('WoWAIDB.chats[1].name'), 'Chat 1');
 });
 
-test('minimize collapses to the mini bar and back; the mini bar X hides everything', () => {
+test('minimize returns to the tracker; hiding the addon hides both surfaces', () => {
   const vm = newVM();
   login(vm);
   vm.run('WoWAI.Toggle(true)');
@@ -696,7 +696,7 @@ test('minimize collapses to the mini bar and back; the mini bar X hides everythi
   assert.equal(vm.evaluate('WoWAIDB.settings.minimized'), 'true');
   vm.run('WoWAI.Minimize(false)');
   assert.equal(vm.evaluate('WoWAIFrame.shown'), 'true');
-  assert.equal(vm.evaluate('WoWAIMini.shown'), 'false');
+  assert.equal(vm.evaluate('WoWAIMini.shown'), 'true', 'tracker remains available alongside detail');
   vm.run('WoWAI.Toggle(false)');
   assert.equal(vm.evaluate('WoWAIFrame.shown'), 'false');
   assert.equal(vm.evaluate('WoWAIMini.shown'), 'false');
@@ -793,4 +793,61 @@ test('live attached chats accept followup and cancel without a pending id', () =
   assert.equal(records.filter(r => r.flags.includes('control=followup')).length, 1);
   assert.equal(records.filter(r => r.flags.includes('control=abort')).length, 1);
   assert.equal(records.every(r => r.flags.includes('target=0') || !r.flags.includes('control=')), true);
+});
+
+test('closing an approval never submits and a replaced dialog rejects the old selection', () => {
+  const vm = newVM(); login(vm); connect(vm);
+  vm.run('WoWAIDB.chats[1].agent="omp"; WoWAI.Send("work")');
+  const chat = vm.evaluate('WoWAIDB.chats[1].id');
+  const id = vm.num('WoWAIDB.chats[1].pendingId');
+  nextSlot(vm, `{ now=time(), replies={{chat="${chat}", id=${id}, status="working", interactive=true, ui={id="old", method="confirm", title="Old request"}}} }`);
+  vm.run('STUB.now=STUB.now+6; STUB.Tick(); WoWAI.ShowInteraction(); WoWAIInteraction.state.choice={[1]=true}; WoWAI.CloseInteraction()');
+  assert.equal(vm.evaluate('WoWAIInteraction.shown'), 'false');
+  assert.equal(stripRecords(vm).some(record => record.flags.includes('control=ui')), false);
+  nextSlot(vm, `{ now=time(), replies={{chat="${chat}", id=${id}, status="working", interactive=true, ui={id="new", method="confirm", title="New request"}}} }`);
+  vm.run('STUB.now=STUB.now+20; STUB.Tick(); WoWAI.SubmitInteraction()');
+  assert.equal(stripRecords(vm).some(record => record.flags.includes('control=ui')), false);
+  vm.run('WoWAI.ShowInteraction(); WoWAI.SubmitInteraction()');
+  assert.equal(stripRecords(vm).some(record => record.flags.includes('control=ui')), false);
+  vm.run('WoWAIInteraction.state.choice={[2]=true}; WoWAI.SubmitInteraction()');
+  assert.equal(stripRecords(vm).find(record => record.flags.includes('control=ui')).text, 'new\x1fconfirm\x1ffalse');
+  assert.equal(vm.num('WoWAIDB.chats[1].pendingId'), id);
+});
+
+test('live input is visible in the tracker without offering a nonexistent RPC dialog', () => {
+  const vm = newVM(); login(vm); connect(vm);
+  vm.run('local c=WoWAIDB.chats[1]; c.agent="omp-live"; WoWAIDB.liveAttached[c.id]=true; c.liveStatus="waiting_input"; GROUPS=WoWAI_ViewModel.Build(WoWAIDB.chats, c.id, {}, WoWAIDB.liveAttached, "")');
+  assert.equal(vm.evaluate('GROUPS[1].chats[1].state'), 'needs');
+  assert.equal(vm.evaluate('GROUPS[1].chats[1].canRespond'), 'false');
+});
+
+test('combat defers alerts, repeated requests do not duplicate them, and clicking selects the target', () => {
+  const vm = newVM(); login(vm); connect(vm);
+  vm.run('WoWAI.NewChat("Other"); WoWAI.Toggle(false); InCombatLockdown=function() return true end; WoWAI_Toasts.Enqueue("done", WoWAIDB.chats[1], "turn:1"); WoWAI_Toasts.Enqueue("done", WoWAIDB.chats[1], "turn:1")');
+  assert.equal(vm.num('#WoWAI_Toasts.queue'), 1);
+  assert.equal(vm.evaluate('WoWAI_Toasts.frames[1] and WoWAI_Toasts.frames[1].active'), null);
+  vm.run('InCombatLockdown=function() return false end; STUB.FireEvent("PLAYER_REGEN_ENABLED")');
+  assert.equal(vm.num('#WoWAI_Toasts.queue'), 0);
+  assert.equal(vm.evaluate('WoWAI_Toasts.frames[1].active'), 'true');
+  vm.run('local f=WoWAI_Toasts.frames[1]; f.scripts.OnClick(f)');
+  assert.equal(vm.evaluate('WoWAIDB.activeChat'), vm.evaluate('WoWAIDB.chats[1].id'));
+  assert.equal(vm.evaluate('WoWAIFrame.shown'), 'true');
+});
+
+test('tracker prioritizes an unanswered dialog over work and work over an earlier failure', () => {
+  const vm = newVM(); login(vm);
+  vm.run('local c=WoWAIDB.chats[1]; c.pendingId=7; c.lastError=true; STATE=function(interactions) return WoWAI_ViewModel.Build(WoWAIDB.chats, c.id, interactions, {}, "E:/Project")[1].chats[1] end; R=STATE({[c.id]={ui={id="dialog"}}})');
+  assert.equal(vm.evaluate('R.state'), 'needs');
+  assert.equal(vm.evaluate('R.canRespond'), 'true');
+  vm.run('R=STATE({})');
+  assert.equal(vm.evaluate('R.state'), 'working');
+  vm.run('WoWAIDB.chats[1].pendingId=nil; R=STATE({})');
+  assert.equal(vm.evaluate('R.state'), 'error');
+});
+
+test('turning notifications off discards combat-held alerts', () => {
+  const vm = newVM(); login(vm);
+  vm.run('InCombatLockdown=function() return true end; WoWAI_Toasts.Enqueue("done", WoWAIDB.chats[1], "held"); WoWAIDB.settings.toasts=false; InCombatLockdown=function() return false end; STUB.FireEvent("PLAYER_REGEN_ENABLED")');
+  assert.equal(vm.num('#WoWAI_Toasts.queue'), 0);
+  assert.equal(vm.evaluate('WoWAI_Toasts.frames[1] and WoWAI_Toasts.frames[1].active or false'), 'false');
 });

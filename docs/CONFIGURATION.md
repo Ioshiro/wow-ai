@@ -4,6 +4,10 @@ Everything the bridge reads: `bridge/config.json`, command-line flags, environme
 
 The bridge reads `config.json` once at start. Restart it after editing, except for an agent's `allowedTools`, which the **Allow & retry** button updates live.
 
+## In-game presentation
+
+`/wow-ai config` opens the presentation controls, also available from the tracker. These settings live in `WoWAIDB.settings` (the addon's SavedVariables), not in `bridge/config.json`: tracker visibility and scale, notification visibility, and hiding the tracker during combat. Notifications are deferred until combat ends. The detail window offers latest reply and full history; its composer and RPC dialog controls keep their existing behavior. Position and window size are saved by the addon. No companion installation or Tern plugin is required for this presentation.
+
 ## Paths
 
 | Key | Default (from `config.example.json`) | Meaning |
